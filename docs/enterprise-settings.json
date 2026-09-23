@@ -1,0 +1,49 @@
+{
+  "//": "Example Gemini CLI system settings for TrustGuard. Deploy with MDM as /etc/gemini-cli/settings.json (Linux), /Library/Application Support/GeminiCli/settings.json (macOS) or C:\\ProgramData\\gemini-cli\\settings.json (Windows). System settings override user and workspace settings, so developers cannot remove these hooks or turn the hooks system off. Install the bootstrap and the binary first; Gemini CLI does not distribute them.",
+  "hooksConfig": {
+    "enabled": true
+  },
+  "hooks": {
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "name": "trustguard-prompt",
+            "type": "command",
+            "command": "node \"/Library/Application Support/TrustGuard/gemini-cli-hooks/trustguard-hook.js\"",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "BeforeTool": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "trustguard-tool-call",
+            "type": "command",
+            "command": "node \"/Library/Application Support/TrustGuard/gemini-cli-hooks/trustguard-hook.js\"",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "trustguard-tool-result",
+            "type": "command",
+            "command": "node \"/Library/Application Support/TrustGuard/gemini-cli-hooks/trustguard-hook.js\"",
+            "timeout": 30000
+          }
+        ]
+      }
+    ]
+  },
+  "admin": {
+    "secureModeEnabled": true
+  }
+}

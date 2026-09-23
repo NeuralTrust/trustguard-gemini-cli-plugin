@@ -1,0 +1,46 @@
+{
+  "description": "TrustGuard AI firewall for Gemini CLI lifecycle hooks",
+  "hooks": {
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "name": "trustguard-prompt",
+            "type": "command",
+            "command": "node \"${extensionPath}${/}hooks${/}trustguard-hook.js\"",
+            "timeout": 30000,
+            "description": "TrustGuard evaluating prompt"
+          }
+        ]
+      }
+    ],
+    "BeforeTool": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "trustguard-tool-call",
+            "type": "command",
+            "command": "node \"${extensionPath}${/}hooks${/}trustguard-hook.js\"",
+            "timeout": 30000,
+            "description": "TrustGuard evaluating tool call"
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "trustguard-tool-result",
+            "type": "command",
+            "command": "node \"${extensionPath}${/}hooks${/}trustguard-hook.js\"",
+            "timeout": 30000,
+            "description": "TrustGuard evaluating tool result"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "trustguard",
+  "version": "0.1.0",
+  "description": "AI firewall for Gemini CLI: evaluates prompts, tool calls and tool results with NeuralTrust TrustGuard."
+}
