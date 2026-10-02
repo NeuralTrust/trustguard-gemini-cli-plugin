@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -22,6 +21,9 @@ type transcriptTurn struct {
 	promptPending bool
 	replyReady    bool
 	ok            bool
+	// toolOutputs are the tool steps after the latest PLANNER_RESPONSE: the
+	// results the next model call is about to read.
+	toolOutputs []string
 }
 
 func transcriptPathOf(in hookInput) string {
@@ -84,6 +86,9 @@ func readTranscriptSteps(path string) []map[string]any {
 // readTranscriptTurn returns the latest user turn. reply is the text of the
 // latest PLANNER_RESPONSE in that turn; a response that only calls tools has
 // none, so replyReady is false until the model writes text.
+//
+// Antigravity writes a tool step only after PostToolUse has run, so tool
+// output is first readable on the next PreInvocation.
 func readTranscriptTurn(path string) transcriptTurn {
 	var turn transcriptTurn
 	for _, obj := range readTranscriptSteps(path) {
@@ -94,43 +99,33 @@ func readTranscriptTurn(path string) transcriptTurn {
 			turn.promptPending = true
 			turn.reply = ""
 			turn.replyReady = false
+			turn.toolOutputs = nil
 		case "PLANNER_RESPONSE":
 			turn.ok = true
 			turn.reply = stepBody(obj)
 			turn.promptPending = false
 			turn.replyReady = turn.reply != ""
+			turn.toolOutputs = nil
+		default:
+			if text := toolStepOutput(obj); text != "" && !turn.promptPending {
+				turn.toolOutputs = append(turn.toolOutputs, text)
+			}
 		}
 	}
 	return turn
 }
 
-// readToolStepOutput returns what the tool step at stepIdx produced: its error
-// when it failed, otherwise its content without Antigravity's timing header.
-// Antigravity's PostToolUse payload carries no result, only stepIdx.
-func readToolStepOutput(path string, stepIdx int) string {
-	steps := readTranscriptSteps(path)
-	for i := len(steps) - 1; i >= 0; i-- {
-		if idx, ok := stepIndex(steps[i]); !ok || idx != stepIdx {
-			continue
-		}
-		if msg, _ := steps[i]["error"].(string); strings.TrimSpace(msg) != "" {
-			return strings.TrimSpace(msg)
-		}
-		content, _ := steps[i]["content"].(string)
-		return stripStepHeader(content)
+// toolStepOutput is what a GENERIC (tool) step produced: its error when it
+// failed, otherwise its content without Antigravity's timing header.
+func toolStepOutput(obj map[string]any) string {
+	if kind, _ := obj["type"].(string); kind != "GENERIC" {
+		return ""
 	}
-	return ""
-}
-
-func stepIndex(obj map[string]any) (int, bool) {
-	switch v := obj["step_index"].(type) {
-	case float64:
-		return int(v), true
-	case string:
-		n, err := strconv.Atoi(strings.TrimSpace(v))
-		return n, err == nil
+	if msg, _ := obj["error"].(string); strings.TrimSpace(msg) != "" {
+		return strings.TrimSpace(msg)
 	}
-	return 0, false
+	content, _ := obj["content"].(string)
+	return stripStepHeader(content)
 }
 
 // stripStepHeader drops the "Created At:" / "Completed At:" lines Antigravity

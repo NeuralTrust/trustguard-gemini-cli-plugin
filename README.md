@@ -74,8 +74,12 @@ Antigravity's payloads carry no prompt, reply or tool output, so the hook
 reads them from `transcriptPath`. `PreInvocation` sends the `<USER_REQUEST>`
 of the latest `USER_INPUT` that has no reply yet. `PostInvocation` sends the
 latest `PLANNER_RESPONSE` text and skips model calls that only requested
-tools. `PostToolUse` sends the output (or error) of the step at `stepIdx`. If
-the transcript cannot be read, the hook sends a short summary instead.
+tools. Antigravity writes a tool's output to the transcript only after
+`PostToolUse`, so the output (or error) is evaluated on the next
+`PreInvocation`, right before the model reads it; if TrustGuard blocks it, the
+model is told to treat it as untrusted. `PostToolUse` records the call and its
+error. If the transcript cannot be read, the hook sends a short summary
+instead.
 Prompt blocking is soft: with `prompt_enforcement` `inject` (the default) a
 blocked prompt is injected back to the model, and `inject_terminate` also ends
 the turn when the reply is blocked. `off` only records. The hard guarantee is
@@ -88,8 +92,8 @@ message. A DLP `transform` that returns replacement text sets `overwrite` on
 |---|---|---|---|
 | `PreToolUse` (`run_command`) | `all` | input | `deny`, `force_ask` or `allow`, plus `overwrite` on a transform |
 | `PreToolUse` (other tools) | `mcp` tools/call | input | same |
-| `PostToolUse` | `mcp` result (step output from the transcript) | output | `{}` |
-| `PreInvocation` | `llm` | input | `injectSteps` when the prompt is blocked and enforcement is on |
+| `PostToolUse` | `mcp` result (tool arguments or error) | output | `{}` |
+| `PreInvocation` | `llm` user prompt, or `mcp` result with the tool output on later calls | input / output | `injectSteps` when the prompt or the tool output is blocked and enforcement is on |
 | `PostInvocation` | `llm` | output | `terminationBehavior: terminate` only with `prompt_enforcement: inject_terminate` |
 | `Stop` | `llm` | output | `{}` |
 
