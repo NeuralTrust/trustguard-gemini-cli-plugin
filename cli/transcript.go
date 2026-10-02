@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -29,19 +31,20 @@ func transcriptPathOf(in hookInput) string {
 	return strings.TrimSpace(in.TranscriptPath)
 }
 
-// readTranscriptTurn reads at most the last 8 MiB of path.
-func readTranscriptTurn(path string) transcriptTurn {
+// readTranscriptSteps decodes the steps in at most the last 8 MiB of path,
+// skipping lines that are not JSON objects. A missing file yields nil.
+func readTranscriptSteps(path string) []map[string]any {
 	if strings.TrimSpace(path) == "" {
-		return transcriptTurn{}
+		return nil
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return transcriptTurn{}
+		return nil
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return transcriptTurn{}
+		return nil
 	}
 	size := info.Size()
 	start := int64(0)
@@ -49,12 +52,12 @@ func readTranscriptTurn(path string) transcriptTurn {
 		start = size - transcriptTailBytes
 	}
 	if _, err := f.Seek(start, 0); err != nil {
-		return transcriptTurn{}
+		return nil
 	}
 	buf := make([]byte, size-start)
-	n, err := f.Read(buf)
-	if n == 0 || (err != nil && n == 0) {
-		return transcriptTurn{}
+	n, _ := io.ReadFull(f, buf)
+	if n == 0 {
+		return nil
 	}
 	buf = buf[:n]
 	if start > 0 {
@@ -63,52 +66,87 @@ func readTranscriptTurn(path string) transcriptTurn {
 		}
 	}
 
-	var turn transcriptTurn
+	var steps []map[string]any
 	for _, line := range bytes.Split(buf, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
-		kind, text := classifyTranscriptLine(line)
-		switch kind {
+		var obj map[string]any
+		if err := json.Unmarshal(line, &obj); err != nil || obj == nil {
+			continue
+		}
+		steps = append(steps, obj)
+	}
+	return steps
+}
+
+// readTranscriptTurn returns the latest user turn. reply is the text of the
+// latest PLANNER_RESPONSE in that turn; a response that only calls tools has
+// none, so replyReady is false until the model writes text.
+func readTranscriptTurn(path string) transcriptTurn {
+	var turn transcriptTurn
+	for _, obj := range readTranscriptSteps(path) {
+		switch stepKind(obj) {
 		case "USER_INPUT":
 			turn.ok = true
-			if text != "" {
-				turn.prompt = text
-			}
+			turn.prompt = stepBody(obj)
 			turn.promptPending = true
+			turn.reply = ""
 			turn.replyReady = false
 		case "PLANNER_RESPONSE":
 			turn.ok = true
-			if text != "" {
-				turn.reply = text
-			}
+			turn.reply = stepBody(obj)
 			turn.promptPending = false
-			turn.replyReady = strings.TrimSpace(turn.reply) != ""
+			turn.replyReady = turn.reply != ""
 		}
 	}
 	return turn
 }
 
-func classifyTranscriptLine(line []byte) (string, string) {
-	var obj map[string]any
-	if err := json.Unmarshal(line, &obj); err != nil {
-		return "", ""
-	}
-	kind := stepKind(obj)
-	text := ""
-	if m := userRequestRE.FindStringSubmatch(string(line)); len(m) == 2 {
-		text = strings.TrimSpace(m[1])
-	}
-	if kind == "PLANNER_RESPONSE" {
-		if body := stepBody(obj); body != "" {
-			text = body
+// readToolStepOutput returns what the tool step at stepIdx produced: its error
+// when it failed, otherwise its content without Antigravity's timing header.
+// Antigravity's PostToolUse payload carries no result, only stepIdx.
+func readToolStepOutput(path string, stepIdx int) string {
+	steps := readTranscriptSteps(path)
+	for i := len(steps) - 1; i >= 0; i-- {
+		if idx, ok := stepIndex(steps[i]); !ok || idx != stepIdx {
+			continue
 		}
+		if msg, _ := steps[i]["error"].(string); strings.TrimSpace(msg) != "" {
+			return strings.TrimSpace(msg)
+		}
+		content, _ := steps[i]["content"].(string)
+		return stripStepHeader(content)
 	}
-	if kind == "USER_INPUT" && text == "" {
-		text = stepBody(obj)
+	return ""
+}
+
+func stepIndex(obj map[string]any) (int, bool) {
+	switch v := obj["step_index"].(type) {
+	case float64:
+		return int(v), true
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		return n, err == nil
 	}
-	return kind, text
+	return 0, false
+}
+
+// stripStepHeader drops the "Created At:" / "Completed At:" lines Antigravity
+// puts before a tool step's output.
+func stripStepHeader(content string) string {
+	lines := strings.Split(content, "\n")
+	i := 0
+	for i < len(lines) {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || strings.HasPrefix(line, "Created At:") || strings.HasPrefix(line, "Completed At:") {
+			i++
+			continue
+		}
+		break
+	}
+	return strings.TrimSpace(strings.Join(lines[i:], "\n"))
 }
 
 func stepKind(obj map[string]any) string {

@@ -66,24 +66,29 @@ The same binary covers Antigravity (IDE, CLI and `agy`). Antigravity does not
 send the event name, so the installer passes it as `hook PreToolUse` and the
 other four events. Only `PreToolUse` can deny a tool call. A policy `ask`
 becomes `force_ask`, so Antigravity's "Always Allow" cache cannot skip it.
-TrustGuard does not answer `allow`: that would auto-approve the tool and skip
-the developer's own review settings.
+A clean verdict, and fail-open, answer `{"decision":"allow"}`: Antigravity
+denies the tool on an empty decision, and it still applies the developer's own
+permission settings after an allow.
 
-`PreInvocation` reads the user's prompt from `transcriptPath` (the
-`<USER_REQUEST>` in the latest `USER_INPUT` that has no reply yet).
-`PostInvocation` sends the `PLANNER_RESPONSE` when that is the latest step.
-If the transcript cannot be read, the hook sends a short summary instead.
+Antigravity's payloads carry no prompt, reply or tool output, so the hook
+reads them from `transcriptPath`. `PreInvocation` sends the `<USER_REQUEST>`
+of the latest `USER_INPUT` that has no reply yet. `PostInvocation` sends the
+latest `PLANNER_RESPONSE` text and skips model calls that only requested
+tools. `PostToolUse` sends the output (or error) of the step at `stepIdx`. If
+the transcript cannot be read, the hook sends a short summary instead.
 Prompt blocking is soft: with `prompt_enforcement` `inject` (the default) a
 blocked prompt is injected back to the model, and `inject_terminate` also ends
 the turn when the reply is blocked. `off` only records. The hard guarantee is
-still `PreToolUse`. A DLP `transform` that returns replacement text is applied
-with `overwrite` on `run_command`.
+still `PreToolUse`. A blocked prompt or tool names the detector or gate in the
+message. A DLP `transform` that returns replacement text sets `overwrite` on
+`run_command` next to the decision (`force_ask` by default, `allow` with
+`transform_action: allow`), so the transformed command is what runs.
 
 | Antigravity event | TrustGuard protocol | Direction | Host output |
 |---|---|---|---|
-| `PreToolUse` (`run_command`) | `all` | input | `deny`, `force_ask`, or `overwrite`. A clean allow leaves the decision empty |
+| `PreToolUse` (`run_command`) | `all` | input | `deny`, `force_ask` or `allow`, plus `overwrite` on a transform |
 | `PreToolUse` (other tools) | `mcp` tools/call | input | same |
-| `PostToolUse` | `mcp` result | output | `{}` |
+| `PostToolUse` | `mcp` result (step output from the transcript) | output | `{}` |
 | `PreInvocation` | `llm` | input | `injectSteps` when the prompt is blocked and enforcement is on |
 | `PostInvocation` | `llm` | output | `terminationBehavior: terminate` only with `prompt_enforcement: inject_terminate` |
 | `Stop` | `llm` | output | `{}` |
@@ -91,10 +96,11 @@ with `overwrite` on `run_command`.
 `source.application` is `antigravity-plugin` and the raw payload is
 `attributes.antigravity`. Shell input is `toolCall.args.CommandLine`.
 
-Install merges a `trustguard` entry into `~/.gemini/config/hooks.json`,
-downloads the pinned binary when it is missing, and refuses to finish unless
-`PreToolUse` returns `deny` against an unreachable guard. `make build` alone
-does not install that binary. Workspace `.agents/hooks.json` is optional;
+Install downloads the pinned binary when it is missing, runs `PreToolUse`
+through the bootstrap against an unreachable guard in closed mode, and only
+then merges a `trustguard` entry into `~/.gemini/config/hooks.json`. If the
+answer is not `deny`, nothing is written. `make build` alone does not install
+a binary. Workspace `.agents/hooks.json` is optional;
 some CLI versions ignore it.
 
 ```bash
@@ -110,10 +116,6 @@ looks first. That copy wins over the downloaded binary:
 make build
 cp bin/trustguard-gemini-cli ~/.trustguard/bin/trustguard-gemini-cli
 ```
-
-The bootstrap currently pins `0.1.0` until `v0.1.1` is released. That older
-binary ignores Antigravity events, which is why the installer smoke test fails
-closed instead of reporting success.
 
 Fail-open is the default. Fail-closed denies `PreToolUse` when TrustGuard is
 unreachable and still lets the telemetry events through.

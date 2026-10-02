@@ -75,6 +75,19 @@ actual=$(
             TRUSTGUARD_GEMINI_CLI_DOWNLOAD_BASE="http://127.0.0.1:9" \
             node "$HOOK" PreToolUse 2>/dev/null
 )
-[ "$actual" = "{}" ] || fail "PreToolUse fail-open must not auto-approve, got: $actual"
+[ "$actual" = '{"decision":"allow"}' ] || fail "PreToolUse fail-open must allow, got: $actual"
+
+# Without Node the shell launcher fails open itself, with an explicit allow on
+# PreToolUse because Antigravity denies the tool on an empty decision.
+case "$(command -v node)" in
+    /usr/bin/* | /bin/*) ;; # node is on the minimal PATH below; nothing to hide
+    *)
+        LAUNCHER="$ROOT/trustguard/hooks/trustguard-hook.sh"
+        actual=$(printf '%s\n' "$PAYLOAD" | env PATH=/usr/bin:/bin /bin/sh "$LAUNCHER" PreToolUse 2>/dev/null)
+        [ "$actual" = '{"decision":"allow"}' ] || fail "launcher without node must allow PreToolUse, got: $actual"
+        actual=$(printf '%s\n' "$PAYLOAD" | env PATH=/usr/bin:/bin /bin/sh "$LAUNCHER" Stop 2>/dev/null)
+        [ "$actual" = "{}" ] || fail "launcher without node must answer {} on Stop, got: $actual"
+        ;;
+esac
 
 printf 'bootstrap hook tests passed\n'
