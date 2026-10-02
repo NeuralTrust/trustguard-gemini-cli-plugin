@@ -48,11 +48,9 @@ function failOpen(message) {
   process.stderr.write(`${NAME} bootstrap: ${message} — allowing without evaluation\n`);
   // Antigravity PreToolUse requires a decision. Every other event, including
   // Gemini CLI, treats an empty object as allow.
-  if (eventArgs()[0] === 'PreToolUse') {
-    process.stdout.write('{"decision":"allow"}\n');
-  } else {
-    process.stdout.write('{}\n');
-  }
+  // Empty output leaves Antigravity's own permissions in place. decision
+  // "allow" would auto-approve the tool.
+  process.stdout.write('{}\n');
   process.exit(0);
 }
 

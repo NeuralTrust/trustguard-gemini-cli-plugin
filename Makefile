@@ -13,6 +13,7 @@ test: ## Run the test suite
 	go test -race ./cli/
 	sh tests/bootstrap-hook.sh
 	sh tests/install-antigravity-hooks.sh
+	sh tests/antigravity-events.sh
 
 lint: ## Vet the sources
 	go vet ./cli/
@@ -31,7 +32,10 @@ install-local: build ## Link the extension + install the local binary for testin
 	gemini extensions link "$(CURDIR)/trustguard"
 	@echo "linked $(CURDIR)/trustguard — start a new Gemini CLI session and run /hooks panel"
 
-install-antigravity: ## Merge TrustGuard into ~/.gemini/config/hooks.json
+install-antigravity: build ## Install hooks and a local binary, then smoke-test PreToolUse
+	@mkdir -p "$(HOME)/.trustguard/bin"
+	@cp bin/trustguard-gemini-cli "$(HOME)/.trustguard/bin/trustguard-gemini-cli"
+	@chmod 0755 "$(HOME)/.trustguard/bin/trustguard-gemini-cli"
 	python3 scripts/install-antigravity-hooks.py --user
 
 uninstall-local: ## Remove the linked extension and the local binary

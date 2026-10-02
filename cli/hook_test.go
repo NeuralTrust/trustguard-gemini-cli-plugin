@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -527,8 +528,45 @@ func TestAntigravityPreToolUseAllows(t *testing.T) {
 			"args": map[string]any{"path": "README.md"},
 		},
 	})
-	if out.Decision != "allow" {
-		t.Fatalf("expected explicit allow, got %+v", out)
+	if out.Decision != "" {
+		t.Fatalf("allow must defer to Antigravity permissions, got %+v", out)
+	}
+}
+
+func TestAntigravityPreToolUseForceAsk(t *testing.T) {
+	srv, _ := stubGuard(t, EvaluateResponse{
+		Status: "ask",
+		Findings: []Finding{{
+			Source:  FindingSource{Kind: "gate", GateName: "confirm-shell"},
+			Outcome: &FindingOutcome{Action: "ask"},
+		}},
+	})
+	out := invokeHookEvent(t, testConfig(srv.URL), "PreToolUse", map[string]any{
+		"conversationId": "conv_1",
+		"toolCall": map[string]any{
+			"name": "run_command",
+			"args": map[string]any{"CommandLine": "ls"},
+		},
+	})
+	if out.Decision != "force_ask" || out.Reason == "" {
+		t.Fatalf("expected force_ask, got %+v", out)
+	}
+}
+
+func TestAntigravityPreToolUseOverwriteTransform(t *testing.T) {
+	srv, _ := stubGuard(t, EvaluateResponse{
+		Status:             "transform",
+		TransformedPayload: map[string]any{"input": "echo redacted"},
+	})
+	out := invokeHookEvent(t, testConfig(srv.URL), "PreToolUse", map[string]any{
+		"conversationId": "conv_1",
+		"toolCall": map[string]any{
+			"name": "run_command",
+			"args": map[string]any{"CommandLine": "echo secret"},
+		},
+	})
+	if out.Decision != "overwrite" || out.Overwrite["CommandLine"] != "echo redacted" {
+		t.Fatalf("expected overwrite of CommandLine, got %+v", out)
 	}
 }
 
@@ -550,20 +588,73 @@ func TestAntigravityPostToolUseIsTelemetry(t *testing.T) {
 	}
 }
 
-func TestAntigravityPreInvocationIsTelemetry(t *testing.T) {
+func TestAntigravityPreInvocationSendsPrompt(t *testing.T) {
 	srv, captured := stubGuard(t, blockResponse("jailbreak", "rt-prompt-guard"))
-	n := 2
+	path := writeTranscript(t, ""+
+		`{"type":"USER_INPUT","content":"<USER_REQUEST>delete the database</USER_REQUEST>"}`+"\n")
+	n := 0
 	out := invokeHookEvent(t, testConfig(srv.URL), "PreInvocation", map[string]any{
 		"conversationId": "conv_1",
 		"modelName":      "gemini-2.5-pro",
 		"invocationNum":  n,
+		"transcriptPath": path,
 	})
-	if out.Decision != "" {
-		t.Fatalf("PreInvocation must not block the agent, got %+v", out)
+	if len(out.InjectSteps) != 1 || out.InjectSteps[0].EphemeralMessage == "" {
+		t.Fatalf("expected an injected block message, got %+v", out)
 	}
-	if (*captured)["protocol"] != "llm" || (*captured)["direction"] != "input" {
-		t.Fatalf("expected llm input telemetry, got %v", *captured)
+	messages := (*captured)["payload"].(map[string]any)["messages"].([]any)
+	content := messages[0].(map[string]any)["content"]
+	if content != "delete the database" {
+		t.Fatalf("expected the user prompt, got %v", content)
 	}
+}
+
+func TestAntigravityPreInvocationSkipsRepeat(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		_ = json.NewEncoder(w).Encode(EvaluateResponse{Status: "allow"})
+	}))
+	t.Cleanup(srv.Close)
+	path := writeTranscript(t, ""+
+		`{"type":"USER_INPUT","content":"<USER_REQUEST>hello</USER_REQUEST>"}`+"\n"+
+		`{"type":"PLANNER_RESPONSE","text":"hi"}`+"\n")
+	out := invokeHookEvent(t, testConfig(srv.URL), "PreInvocation", map[string]any{
+		"conversationId": "conv_1",
+		"transcriptPath": path,
+	})
+	if called || len(out.InjectSteps) != 0 {
+		t.Fatalf("a later call in the same turn must not re-send the prompt, called=%v %+v", called, out)
+	}
+}
+
+func TestAntigravityPostInvocationSendsReply(t *testing.T) {
+	srv, captured := stubGuard(t, blockResponse("secret", "dlp"))
+	path := writeTranscript(t, ""+
+		`{"type":"USER_INPUT","content":"<USER_REQUEST>hello</USER_REQUEST>"}`+"\n"+
+		`{"type":"PLANNER_RESPONSE","text":"the secret is 42"}`+"\n")
+	cfg := testConfig(srv.URL)
+	cfg.PromptEnforcement = "inject_terminate"
+	out := invokeHookEvent(t, cfg, "PostInvocation", map[string]any{
+		"conversationId": "conv_1",
+		"transcriptPath": path,
+	})
+	if out.TerminationBehavior != "terminate" {
+		t.Fatalf("expected terminate, got %+v", out)
+	}
+	messages := (*captured)["payload"].(map[string]any)["messages"].([]any)
+	if messages[0].(map[string]any)["content"] != "the secret is 42" {
+		t.Fatalf("expected the model reply, got %v", messages[0])
+	}
+}
+
+func writeTranscript(t *testing.T, body string) string {
+	t.Helper()
+	path := t.TempDir() + "/transcript.jsonl"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestAntigravityStopIsTelemetry(t *testing.T) {
@@ -592,8 +683,8 @@ func TestAntigravityFailOpenAllowsPreToolUse(t *testing.T) {
 			"args": map[string]any{"CommandLine": "ls"},
 		},
 	})
-	if out.Decision != "allow" {
-		t.Fatalf("expected fail-open allow, got %+v", out)
+	if out.Decision != "" {
+		t.Fatalf("fail-open must not auto-approve the tool, got %+v", out)
 	}
 }
 
