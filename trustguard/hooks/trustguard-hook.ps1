@@ -10,7 +10,12 @@ $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 function Fail-Open([string]$message) {
     [Console]::Error.WriteLine("trustguard-gemini-cli bootstrap: $message — allowing without evaluation")
-    Write-Output '{}'
+    # Antigravity PreToolUse denies the tool on an empty decision.
+    if ($event -eq 'PreToolUse') {
+        Write-Output '{"decision":"allow"}'
+    } else {
+        Write-Output '{}'
+    }
     exit 0
 }
 

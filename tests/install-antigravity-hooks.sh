@@ -49,4 +49,30 @@ env TRUSTGUARD_ANTIGRAVITY_HOOKS="$TEST_ROOT/unused.json" python3 "$SCRIPT" --wo
 # --workspace must not also write the user file when --user is absent
 [ ! -f "$TEST_ROOT/unused.json" ] || fail "workspace install also wrote the user file"
 
+# Smoke test, as on a clean machine: the only binary is the versioned one the
+# bootstrap downloads into the bin dir.
+VERSION=$(sed -n "s/^const VERSION = '\([^']*\)';/\1/p" "$ROOT/trustguard/hooks/trustguard-hook.js")
+BIN_DIR="$TEST_ROOT/bin"
+mkdir -p "$BIN_DIR"
+(cd "$ROOT" && go build -o "$BIN_DIR/trustguard-gemini-cli-$VERSION" ./cli)
+CLEAN_PATH=$(printf '%s' "$PATH" | tr ':' '\n' | while read -r dir; do
+    [ -x "$dir/trustguard-gemini-cli" ] || printf '%s:' "$dir"
+done)
+SMOKE_HOOKS="$TEST_ROOT/smoke-hooks.json"
+env PATH="$CLEAN_PATH" TRUSTGUARD_GEMINI_CLI_BIN_DIR="$BIN_DIR" TRUSTGUARD_ANTIGRAVITY_HOOKS="$SMOKE_HOOKS" \
+    python3 "$SCRIPT" --user >/dev/null || fail "installer did not accept the versioned binary"
+[ -f "$SMOKE_HOOKS" ] || fail "installer passed the smoke test but did not write hooks.json"
+
+# A binary without Antigravity support answers {}: the install must fail
+# before hooks.json is written.
+rm -f "$BIN_DIR/trustguard-gemini-cli-$VERSION"
+printf '#!/bin/sh\ncat >/dev/null\necho {}\n' > "$BIN_DIR/trustguard-gemini-cli"
+chmod 0755 "$BIN_DIR/trustguard-gemini-cli"
+OLD_HOOKS="$TEST_ROOT/old-hooks.json"
+if env PATH="$CLEAN_PATH" TRUSTGUARD_GEMINI_CLI_BIN_DIR="$BIN_DIR" TRUSTGUARD_ANTIGRAVITY_HOOKS="$OLD_HOOKS" \
+    python3 "$SCRIPT" --user >/dev/null 2>&1; then
+    fail "installer accepted a binary that answers {} for PreToolUse"
+fi
+[ ! -f "$OLD_HOOKS" ] || fail "installer wrote hooks.json although the smoke test failed"
+
 printf 'antigravity installer tests passed\n'

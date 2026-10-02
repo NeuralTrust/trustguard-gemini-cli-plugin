@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -94,30 +95,46 @@ def user_hooks_path() -> Path:
     return Path.home() / ".gemini" / "config" / "hooks.json"
 
 
-def find_binary() -> Path | None:
+def bootstrap_version(hook_js: Path) -> str:
+    match = re.search(r"^const VERSION = '([^']*)';$", hook_js.read_text(), re.M)
+    if not match:
+        raise SystemExit(f"{hook_js}: VERSION not found")
+    return match.group(1)
+
+
+def find_binary(version: str) -> Path | None:
+    """The binary the bootstrap would run, in the bootstrap's lookup order."""
     found = shutil.which("trustguard-gemini-cli")
     if found:
         return Path(found)
+    ext = ".exe" if os.name == "nt" else ""
     home = Path(os.environ.get("TRUSTGUARD_GEMINI_CLI_BIN_DIR", Path.home() / ".trustguard" / "bin"))
-    candidate = home / "trustguard-gemini-cli"
-    if candidate.is_file():
-        return candidate
+    for name in (f"trustguard-gemini-cli{ext}", f"trustguard-gemini-cli-{version}{ext}"):
+        candidate = home / name
+        if candidate.is_file():
+            return candidate
     return None
 
 
 def smoke_test(root: Path) -> None:
-    """Fail the install unless PreToolUse returns a decision.
+    """Fail the install unless the hook Antigravity will run evaluates PreToolUse.
 
-    The pinned 0.1.0 binary answers {} for Antigravity events and never calls
-    TrustGuard. A closed-mode call to an unreachable guard must come back deny.
+    The check goes through the Node bootstrap, so it covers the binary lookup
+    and the pinned download too. Binaries older than the Antigravity support
+    answer {} and never call TrustGuard; a closed-mode call to an unreachable
+    guard must come back deny.
     """
-    binary = find_binary()
-    if binary is None:
-        hook = root / "trustguard" / "hooks" / "trustguard-hook.js"
+    hook = root / "trustguard" / "hooks" / "trustguard-hook.js"
+    version = bootstrap_version(hook)
+    if find_binary(version) is None:
+        print(f"downloading trustguard-gemini-cli {version}")
         subprocess.run(["node", str(hook), "--install-only"], check=False)
-        binary = find_binary()
+    binary = find_binary(version)
     if binary is None:
-        raise SystemExit("trustguard-gemini-cli is not installed; PreToolUse was not evaluated")
+        raise SystemExit(
+            f"could not download trustguard-gemini-cli {version}; check egress to GitHub Releases "
+            "(see the bootstrap error above) and run the installer again"
+        )
     payload = json.dumps({
         "conversationId": "install-smoke",
         "toolCall": {"name": "run_command", "args": {"CommandLine": "true"}},
@@ -129,7 +146,7 @@ def smoke_test(root: Path) -> None:
         "TRUSTGUARD_FAIL_MODE": "closed",
     })
     proc = subprocess.run(
-        [str(binary), "hook", "PreToolUse"],
+        ["node", str(hook), "PreToolUse"],
         input=payload,
         text=True,
         capture_output=True,
@@ -138,12 +155,12 @@ def smoke_test(root: Path) -> None:
     try:
         parsed = json.loads(proc.stdout or "")
     except json.JSONDecodeError as err:
-        raise SystemExit(f"{binary} did not return JSON for PreToolUse ({err}): {proc.stdout!r}") from err
+        raise SystemExit(f"the hook did not return JSON for PreToolUse ({err}): {proc.stdout!r} {proc.stderr}") from err
     if parsed.get("decision") != "deny":
         raise SystemExit(
-            f"{binary} answered {parsed!r} for PreToolUse. "
-            "That binary does not evaluate Antigravity hooks. "
-            "Install a build from main (v0.1.1 or newer) into ~/.trustguard/bin."
+            f"{binary} answered {parsed!r} for PreToolUse, so it does not evaluate Antigravity hooks. "
+            f"Remove it if it is an old local build, or update this checkout (git pull), "
+            f"then run the installer again."
         )
     print(f"smoke ok: {binary} denies PreToolUse when TrustGuard is unreachable")
 
@@ -174,6 +191,11 @@ def main() -> None:
     if not sh.is_file() or not ps1.is_file():
         raise SystemExit(f"missing hook bootstraps under {root / 'trustguard' / 'hooks'}")
 
+    # Check before writing: a hooks.json pointing at a hook that cannot
+    # evaluate would install silently broken hooks.
+    if not args.skip_smoke:
+        smoke_test(root)
+
     block = trustguard_block(sh, ps1)
     wrote = False
     if args.workspace is not None:
@@ -185,8 +207,6 @@ def main() -> None:
         wrote = True
     if not wrote:
         raise SystemExit("no hooks.json target")
-    if not args.skip_smoke:
-        smoke_test(root)
 
 
 if __name__ == "__main__":
