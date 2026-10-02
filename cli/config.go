@@ -40,6 +40,11 @@ type Config struct {
 	ConsumerID string `json:"consumer_id"`
 	// Events disables individual hook events, e.g. {"AfterTool": false}.
 	Events map[string]bool `json:"events"`
+	// PromptEnforcement controls Antigravity prompt blocking, which has no
+	// native deny. "off" records only. "inject" tells the model the request
+	// was blocked. "inject_terminate" also ends the turn when the reply is
+	// blocked. The hard gate remains PreToolUse.
+	PromptEnforcement string `json:"prompt_enforcement"`
 
 	// managed is set when the MDM system file shipped an org API key. Locked
 	// fields then refuse user-file and env overrides so a developer cannot
@@ -53,6 +58,10 @@ const (
 	defaultTransformAction = "ask"
 	defaultTimeoutMS       = 5000
 	defaultMaxContentBytes = 256 * 1024
+
+	promptEnforcementOff             = "off"
+	promptEnforcementInject          = "inject"
+	promptEnforcementInjectTerminate = "inject_terminate"
 )
 
 func defaultConfigPath() string {
@@ -141,6 +150,9 @@ func applyOverlay(cfg *Config, overlay Config) {
 	if overlay.Events != nil {
 		cfg.Events = overlay.Events
 	}
+	if overlay.PromptEnforcement != "" {
+		cfg.PromptEnforcement = overlay.PromptEnforcement
+	}
 }
 
 func applyEnv(cfg *Config) {
@@ -164,6 +176,9 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("TRUSTGUARD_CONSUMER_ID"); v != "" {
 		cfg.ConsumerID = v
 	}
+	if v := os.Getenv("TRUSTGUARD_PROMPT_ENFORCEMENT"); v != "" {
+		cfg.PromptEnforcement = v
+	}
 }
 
 func (c *Config) applyDefaults() {
@@ -183,6 +198,20 @@ func (c *Config) applyDefaults() {
 	}
 	if c.MaxContentBytes <= 0 {
 		c.MaxContentBytes = defaultMaxContentBytes
+	}
+	switch c.PromptEnforcement {
+	case promptEnforcementOff, promptEnforcementInject, promptEnforcementInjectTerminate:
+	default:
+		c.PromptEnforcement = promptEnforcementInject
+	}
+}
+
+func (c *Config) promptEnforcement() string {
+	switch c.PromptEnforcement {
+	case promptEnforcementOff, promptEnforcementInjectTerminate:
+		return c.PromptEnforcement
+	default:
+		return promptEnforcementInject
 	}
 }
 

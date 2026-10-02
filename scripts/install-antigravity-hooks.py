@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -92,6 +94,60 @@ def user_hooks_path() -> Path:
     return Path.home() / ".gemini" / "config" / "hooks.json"
 
 
+def find_binary() -> Path | None:
+    found = shutil.which("trustguard-gemini-cli")
+    if found:
+        return Path(found)
+    home = Path(os.environ.get("TRUSTGUARD_GEMINI_CLI_BIN_DIR", Path.home() / ".trustguard" / "bin"))
+    candidate = home / "trustguard-gemini-cli"
+    if candidate.is_file():
+        return candidate
+    return None
+
+
+def smoke_test(root: Path) -> None:
+    """Fail the install unless PreToolUse returns a decision.
+
+    The pinned 0.1.0 binary answers {} for Antigravity events and never calls
+    TrustGuard. A closed-mode call to an unreachable guard must come back deny.
+    """
+    binary = find_binary()
+    if binary is None:
+        hook = root / "trustguard" / "hooks" / "trustguard-hook.js"
+        subprocess.run(["node", str(hook), "--install-only"], check=False)
+        binary = find_binary()
+    if binary is None:
+        raise SystemExit("trustguard-gemini-cli is not installed; PreToolUse was not evaluated")
+    payload = json.dumps({
+        "conversationId": "install-smoke",
+        "toolCall": {"name": "run_command", "args": {"CommandLine": "true"}},
+    })
+    env = os.environ.copy()
+    env.update({
+        "TRUSTGUARD_API_KEY": "tgk_smoke",
+        "TRUSTGUARD_DATA_URL": "http://127.0.0.1:9",
+        "TRUSTGUARD_FAIL_MODE": "closed",
+    })
+    proc = subprocess.run(
+        [str(binary), "hook", "PreToolUse"],
+        input=payload,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    try:
+        parsed = json.loads(proc.stdout or "")
+    except json.JSONDecodeError as err:
+        raise SystemExit(f"{binary} did not return JSON for PreToolUse ({err}): {proc.stdout!r}") from err
+    if parsed.get("decision") != "deny":
+        raise SystemExit(
+            f"{binary} answered {parsed!r} for PreToolUse. "
+            "That binary does not evaluate Antigravity hooks. "
+            "Install a build from main (v0.1.1 or newer) into ~/.trustguard/bin."
+        )
+    print(f"smoke ok: {binary} denies PreToolUse when TrustGuard is unreachable")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -104,6 +160,11 @@ def main() -> None:
         nargs="?",
         const=".",
         help="merge <dir>/.agents/hooks.json (default: current directory)",
+    )
+    parser.add_argument(
+        "--skip-smoke",
+        action="store_true",
+        help="write hooks.json without checking that PreToolUse returns a decision",
     )
     args = parser.parse_args()
 
@@ -124,6 +185,8 @@ def main() -> None:
         wrote = True
     if not wrote:
         raise SystemExit("no hooks.json target")
+    if not args.skip_smoke:
+        smoke_test(root)
 
 
 if __name__ == "__main__":

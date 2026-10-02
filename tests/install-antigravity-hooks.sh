@@ -20,7 +20,7 @@ USER_HOOKS="$TEST_ROOT/hooks.json"
 mkdir -p "$(dirname "$USER_HOOKS")"
 printf '%s\n' '{"existing":{"Stop":[{"command":"echo keep"}]}}' > "$USER_HOOKS"
 
-env TRUSTGUARD_ANTIGRAVITY_HOOKS="$USER_HOOKS" python3 "$SCRIPT" --user >/dev/null
+env TRUSTGUARD_ANTIGRAVITY_HOOKS="$USER_HOOKS" python3 "$SCRIPT" --user --skip-smoke >/dev/null
 
 python3 - "$USER_HOOKS" <<'PY' || fail "user hooks.json was not merged"
 import json, sys
@@ -44,7 +44,7 @@ print("merged")
 PY
 
 WORK="$TEST_ROOT/project"
-env TRUSTGUARD_ANTIGRAVITY_HOOKS="$TEST_ROOT/unused.json" python3 "$SCRIPT" --workspace "$WORK" >/dev/null
+env TRUSTGUARD_ANTIGRAVITY_HOOKS="$TEST_ROOT/unused.json" python3 "$SCRIPT" --workspace "$WORK" --skip-smoke >/dev/null
 [ -f "$WORK/.agents/hooks.json" ] || fail "workspace hooks.json was not written"
 # --workspace must not also write the user file when --user is absent
 [ ! -f "$TEST_ROOT/unused.json" ] || fail "workspace install also wrote the user file"

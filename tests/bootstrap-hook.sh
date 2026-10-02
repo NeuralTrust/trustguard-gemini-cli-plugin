@@ -75,6 +75,6 @@ actual=$(
             TRUSTGUARD_GEMINI_CLI_DOWNLOAD_BASE="http://127.0.0.1:9" \
             node "$HOOK" PreToolUse 2>/dev/null
 )
-[ "$actual" = '{"decision":"allow"}' ] || fail "PreToolUse fail-open must allow, got: $actual"
+[ "$actual" = "{}" ] || fail "PreToolUse fail-open must not auto-approve, got: $actual"
 
 printf 'bootstrap hook tests passed\n'

@@ -12,11 +12,7 @@ DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 fail_open() {
     echo "trustguard-gemini-cli bootstrap: $1 — allowing without evaluation" >&2
-    if [ "$EVENT" = "PreToolUse" ]; then
-        printf '%s\n' '{"decision":"allow"}'
-    else
-        printf '%s\n' '{}'
-    fi
+    printf '%s\n' '{}'
     exit 0
 }
 

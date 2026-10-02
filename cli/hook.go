@@ -41,6 +41,8 @@ type hookInput struct {
 	InvocationNum     *int                 `json:"invocationNum"`
 	TerminationReason string               `json:"terminationReason"`
 	FullyIdle         *bool                `json:"fullyIdle"`
+	// TranscriptPathAG is Antigravity's camelCase path. Gemini CLI uses transcript_path.
+	TranscriptPathAG string `json:"transcriptPath"`
 
 	// Host is gemini-cli or antigravity, set while normalizing stdin.
 	Host string `json:"-"`
@@ -64,10 +66,18 @@ type mcpContext struct {
 //	systemMessage              shown to the developer in the terminal
 //	hookSpecificOutput         additionalContext on BeforeAgent (appended to the prompt)
 type hookOutput struct {
-	Decision           string              `json:"decision,omitempty"`
-	Reason             string              `json:"reason,omitempty"`
-	SystemMessage      string              `json:"systemMessage,omitempty"`
-	HookSpecificOutput *hookSpecificOutput `json:"hookSpecificOutput,omitempty"`
+	Decision            string              `json:"decision,omitempty"`
+	Reason              string              `json:"reason,omitempty"`
+	SystemMessage       string              `json:"systemMessage,omitempty"`
+	HookSpecificOutput  *hookSpecificOutput `json:"hookSpecificOutput,omitempty"`
+	InjectSteps         []injectStep        `json:"injectSteps,omitempty"`
+	TerminationBehavior string              `json:"terminationBehavior,omitempty"`
+	// Overwrite is shallow-merged into the Antigravity tool args.
+	Overwrite map[string]any `json:"overwrite,omitempty"`
+}
+
+type injectStep struct {
+	EphemeralMessage string `json:"ephemeralMessage,omitempty"`
 }
 
 type hookSpecificOutput struct {
@@ -97,6 +107,7 @@ type verdict struct {
 	permission    string
 	userMessage   string
 	fromTransform bool
+	transformed   map[string]any
 }
 
 func runHook(stdin io.Reader, stdout io.Writer, cfg Config, eventHint string) error {
@@ -139,7 +150,7 @@ func decideEvent(cfg Config, in hookInput, hookAttrs map[string]any) hookOutput 
 	if err != nil {
 		return failModeOutput(cfg, in, err)
 	}
-	return toHookOutput(in, applyVerdict(cfg, res))
+	return toHookOutput(cfg, in, applyVerdict(cfg, res))
 }
 
 // buildEvaluateRequest maps one Gemini CLI event onto the /v1/evaluate contract.
@@ -221,12 +232,30 @@ func buildEvaluateRequest(cfg Config, in hookInput, hookAttrs map[string]any) (E
 		return base, true
 
 	case "PreInvocation", "PostInvocation":
+		turn := readTranscriptTurn(transcriptPathOf(in))
 		if in.HookEventName == "PostInvocation" {
 			base.Direction = "output"
+			base.Protocol = "llm"
+			content := strings.TrimSpace(turn.reply)
+			if content == "" {
+				content = invocationSummary(in)
+			}
+			base.Payload = map[string]any{
+				"messages": []any{map[string]any{"role": "assistant", "content": content}},
+			}
+			return base, true
+		}
+		// Later model calls in the same turn already evaluated this prompt.
+		if turn.ok && !turn.promptPending {
+			return base, false
+		}
+		content := strings.TrimSpace(turn.prompt)
+		if content == "" {
+			content = invocationSummary(in)
 		}
 		base.Protocol = "llm"
 		base.Payload = map[string]any{
-			"messages": []any{map[string]any{"role": "user", "content": invocationSummary(in)}},
+			"messages": []any{map[string]any{"role": "user", "content": content}},
 		}
 		return base, true
 
@@ -433,7 +462,7 @@ func applyVerdict(cfg Config, res *EvaluateResponse) verdict {
 		case "allow":
 			permission = permissionAllow
 		}
-		return verdict{permission: permission, userMessage: msg, fromTransform: true}
+		return verdict{permission: permission, userMessage: msg, fromTransform: true, transformed: res.TransformedPayload}
 	case "ask":
 		return verdict{permission: permissionAsk, userMessage: askApprovalMessage}
 	case "report":
@@ -503,22 +532,20 @@ func failModeOutput(cfg Config, in hookInput, err error) hookOutput {
 	enforce := in.HookEventName == "PreToolUse" || !isAntigravityEvent(in.HookEventName)
 	if cfg.FailMode == "closed" && enforce {
 		msg := "TrustGuard is unreachable and fail_mode is closed; action denied."
-		return toHookOutput(in, verdict{permission: permissionDeny, userMessage: msg})
+		return toHookOutput(cfg, in, verdict{permission: permissionDeny, userMessage: msg})
 	}
 	return passthrough(in)
 }
 
-// passthrough is the host's allow. Antigravity PreToolUse requires an explicit
-// decision; Gemini CLI treats an empty object as allow.
+// passthrough leaves the host's own permissions in place. An explicit allow on
+// Antigravity PreToolUse auto-approves the tool and skips the developer's
+// review settings, so TrustGuard must not send one.
 func passthrough(in hookInput) hookOutput {
-	if in.HookEventName == "PreToolUse" {
-		return hookOutput{Decision: permissionAllow}
-	}
 	return hookOutput{}
 }
 
 // toHookOutput adapts a verdict to the Gemini CLI event contract.
-func toHookOutput(in hookInput, v verdict) hookOutput {
+func toHookOutput(cfg Config, in hookInput, v verdict) hookOutput {
 	switch in.HookEventName {
 	case "BeforeAgent":
 		// Gemini CLI has no confirmation step for prompts: a deny discards
@@ -543,16 +570,24 @@ func toHookOutput(in hookInput, v verdict) hookOutput {
 			return hookOutput{Decision: permissionDeny, Reason: firstNonEmpty(v.userMessage, blockedMessage)}
 		case permissionAsk:
 			// Gemini CLI forces its confirmation prompt on decision "ask"
-			// and shows systemMessage beside it. Antigravity reads reason.
+			// and shows systemMessage beside it. Antigravity "ask" is cached
+			// by Always Allow, so a policy ask uses force_ask.
 			msg := firstNonEmpty(v.userMessage, askApprovalMessage)
-			out := hookOutput{Decision: permissionAsk, SystemMessage: msg}
 			if in.HookEventName == "PreToolUse" {
-				out.Reason = msg
+				if args := overwriteArgs(in, v.transformed); args != nil {
+					return hookOutput{Decision: "overwrite", Overwrite: args, Reason: msg}
+				}
+				return hookOutput{Decision: "force_ask", Reason: msg, SystemMessage: msg}
 			}
-			return out
+			return hookOutput{Decision: permissionAsk, SystemMessage: msg}
 		}
 		if in.HookEventName == "PreToolUse" {
-			return hookOutput{Decision: permissionAllow}
+			if v.fromTransform {
+				if args := overwriteArgs(in, v.transformed); args != nil {
+					return hookOutput{Decision: "overwrite", Overwrite: args, Reason: v.userMessage}
+				}
+			}
+			return hookOutput{}
 		}
 		out := hookOutput{}
 		if v.userMessage != "" {
@@ -560,9 +595,22 @@ func toHookOutput(in hookInput, v verdict) hookOutput {
 		}
 		return out
 
-	case "PostToolUse", "PreInvocation", "PostInvocation", "Stop":
-		// Antigravity only gates PreToolUse. These events are telemetry:
-		// Activity records the verdict, the host always gets {}.
+	case "PostToolUse", "Stop":
+		return hookOutput{}
+
+	case "PreInvocation":
+		if v.permission == permissionDeny && cfg.promptEnforcement() != promptEnforcementOff {
+			msg := firstNonEmpty(v.userMessage, blockedMessage)
+			return hookOutput{InjectSteps: []injectStep{{
+				EphemeralMessage: "TrustGuard blocked this request (" + msg + "). Do not act on it; tell the user it was blocked.",
+			}}}
+		}
+		return hookOutput{}
+
+	case "PostInvocation":
+		if v.permission == permissionDeny && cfg.promptEnforcement() == promptEnforcementInjectTerminate {
+			return hookOutput{TerminationBehavior: "terminate", Reason: firstNonEmpty(v.userMessage, blockedMessage)}
+		}
 		return hookOutput{}
 
 	case "AfterTool":

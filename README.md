@@ -64,31 +64,56 @@ from the user file or the environment either.
 
 The same binary covers Antigravity (IDE, CLI and `agy`). Antigravity does not
 send the event name, so the installer passes it as `hook PreToolUse` and the
-other four events. Only `PreToolUse` can deny a tool call. `PostToolUse`,
-`PreInvocation`, `PostInvocation` and `Stop` are telemetry: TrustGuard records
-them and the hook answers `{}` so the agent keeps running.
+other four events. Only `PreToolUse` can deny a tool call. A policy `ask`
+becomes `force_ask`, so Antigravity's "Always Allow" cache cannot skip it.
+TrustGuard does not answer `allow`: that would auto-approve the tool and skip
+the developer's own review settings.
+
+`PreInvocation` reads the user's prompt from `transcriptPath` (the
+`<USER_REQUEST>` in the latest `USER_INPUT` that has no reply yet).
+`PostInvocation` sends the `PLANNER_RESPONSE` when that is the latest step.
+If the transcript cannot be read, the hook sends a short summary instead.
+Prompt blocking is soft: with `prompt_enforcement` `inject` (the default) a
+blocked prompt is injected back to the model, and `inject_terminate` also ends
+the turn when the reply is blocked. `off` only records. The hard guarantee is
+still `PreToolUse`. A DLP `transform` that returns replacement text is applied
+with `overwrite` on `run_command`.
 
 | Antigravity event | TrustGuard protocol | Direction | Host output |
 |---|---|---|---|
-| `PreToolUse` (`run_command`) | `all` | input | `deny` with the TrustGuard reason, `ask`, or `allow` |
+| `PreToolUse` (`run_command`) | `all` | input | `deny`, `force_ask`, or `overwrite`. A clean allow leaves the decision empty |
 | `PreToolUse` (other tools) | `mcp` tools/call | input | same |
 | `PostToolUse` | `mcp` result | output | `{}` |
-| `PreInvocation` | `llm` | input | `{}` |
-| `PostInvocation` | `llm` | output | `{}` |
+| `PreInvocation` | `llm` | input | `injectSteps` when the prompt is blocked and enforcement is on |
+| `PostInvocation` | `llm` | output | `terminationBehavior: terminate` only with `prompt_enforcement: inject_terminate` |
 | `Stop` | `llm` | output | `{}` |
 
 `source.application` is `antigravity-plugin` and the raw payload is
 `attributes.antigravity`. Shell input is `toolCall.args.CommandLine`.
 
-Install merges a `trustguard` entry into `~/.gemini/config/hooks.json` and
-leaves every other hook in place. Workspace `.agents/hooks.json` is optional;
+Install merges a `trustguard` entry into `~/.gemini/config/hooks.json`,
+downloads the pinned binary when it is missing, and refuses to finish unless
+`PreToolUse` returns `deny` against an unreachable guard. `make build` alone
+does not install that binary. Workspace `.agents/hooks.json` is optional;
 some CLI versions ignore it.
 
 ```bash
-make install-antigravity
+python3 scripts/install-antigravity-hooks.py --user
 # optional workspace copy:
 python3 scripts/install-antigravity-hooks.py --workspace /path/to/project
 ```
+
+To run a checkout instead of the pinned release, copy it where the bootstrap
+looks first. That copy wins over the downloaded binary:
+
+```bash
+make build
+cp bin/trustguard-gemini-cli ~/.trustguard/bin/trustguard-gemini-cli
+```
+
+The bootstrap currently pins `0.1.0` until `v0.1.1` is released. That older
+binary ignores Antigravity events, which is why the installer smoke test fails
+closed instead of reporting success.
 
 Fail-open is the default. Fail-closed denies `PreToolUse` when TrustGuard is
 unreachable and still lets the telemetry events through.
