@@ -40,9 +40,19 @@ const BASE_URL =
 const BIN_DIR =
   process.env.TRUSTGUARD_GEMINI_CLI_BIN_DIR || path.join(os.homedir(), '.trustguard', 'bin');
 
+function eventArgs() {
+  return process.argv.slice(2).filter((arg) => arg !== '--install-only');
+}
+
 function failOpen(message) {
   process.stderr.write(`${NAME} bootstrap: ${message} — allowing without evaluation\n`);
-  process.stdout.write('{}\n');
+  // Antigravity PreToolUse requires a decision. Every other event, including
+  // Gemini CLI, treats an empty object as allow.
+  if (eventArgs()[0] === 'PreToolUse') {
+    process.stdout.write('{"decision":"allow"}\n');
+  } else {
+    process.stdout.write('{}\n');
+  }
   process.exit(0);
 }
 
@@ -55,7 +65,8 @@ function readStdin() {
 }
 
 function runBinary(bin) {
-  const result = spawnSync(bin, ['hook'], {
+  const args = ['hook', ...eventArgs()];
+  const result = spawnSync(bin, args, {
     input: readStdin(),
     stdio: ['pipe', 'pipe', 'inherit'],
     maxBuffer: 16 * 1024 * 1024,

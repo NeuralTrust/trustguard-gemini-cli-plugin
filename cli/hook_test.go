@@ -41,9 +41,14 @@ func stubGuard(t *testing.T, response EvaluateResponse) (*httptest.Server, *map[
 
 func invokeHook(t *testing.T, cfg Config, input map[string]any) hookOutput {
 	t.Helper()
+	return invokeHookEvent(t, cfg, "", input)
+}
+
+func invokeHookEvent(t *testing.T, cfg Config, event string, input map[string]any) hookOutput {
+	t.Helper()
 	raw, _ := json.Marshal(input)
 	var out bytes.Buffer
-	if err := runHook(bytes.NewReader(raw), &out, cfg); err != nil {
+	if err := runHook(bytes.NewReader(raw), &out, cfg, event); err != nil {
 		t.Fatalf("runHook: %v", err)
 	}
 	var parsed hookOutput
@@ -478,5 +483,142 @@ func TestConsumerIDOmittedWithoutConfig(t *testing.T) {
 	}
 	if attr(t, captured, "user")["email"] != "alice@acme.com" {
 		t.Fatalf("account email must travel in attributes.user.email, got %v", (*captured)["attributes"])
+	}
+}
+
+func TestAntigravityPreToolUseDeniesShell(t *testing.T) {
+	srv, captured := stubGuard(t, blockResponse("shell", "command-guard"))
+	out := invokeHookEvent(t, testConfig(srv.URL), "PreToolUse", map[string]any{
+		"conversationId": "conv_1",
+		"workspacePaths": []string{"/tmp/proj"},
+		"modelName":      "gemini-2.5-pro",
+		"toolCall": map[string]any{
+			"name": "run_command",
+			"args": map[string]any{"CommandLine": "rm -rf /"},
+		},
+	})
+	if out.Decision != "deny" || out.Reason == "" {
+		t.Fatalf("expected deny with a reason, got %+v", out)
+	}
+	if (*captured)["protocol"] != "all" || (*captured)["direction"] != "input" {
+		t.Fatalf("expected protocol all input, got %v", *captured)
+	}
+	if (*captured)["session_id"] != "conv_1" {
+		t.Fatalf("expected session from conversationId, got %v", (*captured)["session_id"])
+	}
+	payload := (*captured)["payload"].(map[string]any)
+	if payload["input"] != "rm -rf /" {
+		t.Fatalf("expected CommandLine as input, got %v", payload)
+	}
+	if attr(t, captured, "source")["application"] != "antigravity-plugin" {
+		t.Fatalf("expected antigravity-plugin, got %v", (*captured)["attributes"])
+	}
+	if _, ok := (*captured)["attributes"].(map[string]any)["antigravity"]; !ok {
+		t.Fatalf("expected attributes.antigravity, got %v", (*captured)["attributes"])
+	}
+}
+
+func TestAntigravityPreToolUseAllows(t *testing.T) {
+	srv, _ := stubGuard(t, EvaluateResponse{Status: "allow"})
+	out := invokeHookEvent(t, testConfig(srv.URL), "PreToolUse", map[string]any{
+		"conversationId": "conv_1",
+		"toolCall": map[string]any{
+			"name": "read_file",
+			"args": map[string]any{"path": "README.md"},
+		},
+	})
+	if out.Decision != "allow" {
+		t.Fatalf("expected explicit allow, got %+v", out)
+	}
+}
+
+func TestAntigravityPostToolUseIsTelemetry(t *testing.T) {
+	srv, captured := stubGuard(t, blockResponse("secret", "dlp"))
+	out := invokeHookEvent(t, testConfig(srv.URL), "PostToolUse", map[string]any{
+		"conversationId": "conv_1",
+		"toolCall": map[string]any{
+			"name": "run_command",
+			"args": map[string]any{"CommandLine": "cat .env"},
+		},
+		"error": "permission denied",
+	})
+	if out.Decision != "" || out.Reason != "" {
+		t.Fatalf("PostToolUse must not change the host decision, got %+v", out)
+	}
+	if (*captured)["direction"] != "output" {
+		t.Fatalf("expected output telemetry, got %v", *captured)
+	}
+}
+
+func TestAntigravityPreInvocationIsTelemetry(t *testing.T) {
+	srv, captured := stubGuard(t, blockResponse("jailbreak", "rt-prompt-guard"))
+	n := 2
+	out := invokeHookEvent(t, testConfig(srv.URL), "PreInvocation", map[string]any{
+		"conversationId": "conv_1",
+		"modelName":      "gemini-2.5-pro",
+		"invocationNum":  n,
+	})
+	if out.Decision != "" {
+		t.Fatalf("PreInvocation must not block the agent, got %+v", out)
+	}
+	if (*captured)["protocol"] != "llm" || (*captured)["direction"] != "input" {
+		t.Fatalf("expected llm input telemetry, got %v", *captured)
+	}
+}
+
+func TestAntigravityStopIsTelemetry(t *testing.T) {
+	srv, captured := stubGuard(t, EvaluateResponse{Status: "allow"})
+	out := invokeHookEvent(t, testConfig(srv.URL), "Stop", map[string]any{
+		"conversationId":    "conv_1",
+		"terminationReason": "completed",
+	})
+	if out.Decision != "" {
+		t.Fatalf("Stop must not continue the agent, got %+v", out)
+	}
+	if (*captured)["direction"] != "output" {
+		t.Fatalf("expected output telemetry, got %v", *captured)
+	}
+}
+
+func TestAntigravityFailOpenAllowsPreToolUse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	out := invokeHookEvent(t, testConfig(srv.URL), "PreToolUse", map[string]any{
+		"conversationId": "conv_1",
+		"toolCall": map[string]any{
+			"name": "run_command",
+			"args": map[string]any{"CommandLine": "ls"},
+		},
+	})
+	if out.Decision != "allow" {
+		t.Fatalf("expected fail-open allow, got %+v", out)
+	}
+}
+
+func TestAntigravityFailClosedDeniesOnlyPreToolUse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := testConfig(srv.URL)
+	cfg.FailMode = "closed"
+	denied := invokeHookEvent(t, cfg, "PreToolUse", map[string]any{
+		"conversationId": "conv_1",
+		"toolCall": map[string]any{
+			"name": "run_command",
+			"args": map[string]any{"CommandLine": "ls"},
+		},
+	})
+	if denied.Decision != "deny" {
+		t.Fatalf("expected fail-closed deny on PreToolUse, got %+v", denied)
+	}
+	telemetry := invokeHookEvent(t, cfg, "Stop", map[string]any{
+		"conversationId":    "conv_1",
+		"terminationReason": "completed",
+	})
+	if telemetry.Decision != "" {
+		t.Fatalf("fail-closed telemetry must not stop the agent, got %+v", telemetry)
 	}
 }

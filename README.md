@@ -60,10 +60,43 @@ from the user file or the environment either.
 | `BeforeTool` (MCP and other built-in tools) | `mcp` tools/call | input | `params.name` is the server's tool name from `mcp_context`; `attributes.mcp.server` names the server |
 | `AfterTool` | `mcp` result | output | Detector `block` replaces the tool result with the reason; gate `ask` is ignored |
 
+## Antigravity
+
+The same binary covers Antigravity (IDE, CLI and `agy`). Antigravity does not
+send the event name, so the installer passes it as `hook PreToolUse` and the
+other four events. Only `PreToolUse` can deny a tool call. `PostToolUse`,
+`PreInvocation`, `PostInvocation` and `Stop` are telemetry: TrustGuard records
+them and the hook answers `{}` so the agent keeps running.
+
+| Antigravity event | TrustGuard protocol | Direction | Host output |
+|---|---|---|---|
+| `PreToolUse` (`run_command`) | `all` | input | `deny` with the TrustGuard reason, `ask`, or `allow` |
+| `PreToolUse` (other tools) | `mcp` tools/call | input | same |
+| `PostToolUse` | `mcp` result | output | `{}` |
+| `PreInvocation` | `llm` | input | `{}` |
+| `PostInvocation` | `llm` | output | `{}` |
+| `Stop` | `llm` | output | `{}` |
+
+`source.application` is `antigravity-plugin` and the raw payload is
+`attributes.antigravity`. Shell input is `toolCall.args.CommandLine`.
+
+Install merges a `trustguard` entry into `~/.gemini/config/hooks.json` and
+leaves every other hook in place. Workspace `.agents/hooks.json` is optional;
+some CLI versions ignore it.
+
+```bash
+make install-antigravity
+# optional workspace copy:
+python3 scripts/install-antigravity-hooks.py --workspace /path/to/project
+```
+
+Fail-open is the default. Fail-closed denies `PreToolUse` when TrustGuard is
+unreachable and still lets the telemetry events through.
+
 `attributes.user.email` is the signed-in Google account from
 `~/.gemini/google_accounts.json` (`GEMINI_CLI_HOME` honoured). `consumer_id` is
 only sent when set via `TRUSTGUARD_CONSUMER_ID` or `consumer_id` in config;
-otherwise it is omitted. The full hook payload travels in
+otherwise it is omitted. The Gemini CLI payload travels in
 `attributes.gemini_cli`.
 
 Model traffic is not inspected by these hooks. To govern it, point Gemini CLI

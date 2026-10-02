@@ -1,4 +1,4 @@
-.PHONY: build dist test lint install-local uninstall-local release-plan
+.PHONY: build dist test lint install-local uninstall-local install-antigravity release-plan
 
 VERSION ?= dev
 
@@ -12,10 +12,12 @@ dist: ## Cross-compile every release binary into ./dist/ (VERSION=X.Y.Z)
 test: ## Run the test suite
 	go test -race ./cli/
 	sh tests/bootstrap-hook.sh
+	sh tests/install-antigravity-hooks.sh
 
 lint: ## Vet the sources
 	go vet ./cli/
 	node --check trustguard/hooks/trustguard-hook.js
+	python3 -c "import ast, pathlib; ast.parse(pathlib.Path('scripts/install-antigravity-hooks.py').read_text())"
 
 release-plan: ## Print what the Release workflow would do (mode + version)
 	@python3 scripts/release.py plan
@@ -28,6 +30,9 @@ install-local: build ## Link the extension + install the local binary for testin
 	@chmod 0755 "$(HOME)/.trustguard/bin/trustguard-gemini-cli"
 	gemini extensions link "$(CURDIR)/trustguard"
 	@echo "linked $(CURDIR)/trustguard — start a new Gemini CLI session and run /hooks panel"
+
+install-antigravity: ## Merge TrustGuard into ~/.gemini/config/hooks.json
+	python3 scripts/install-antigravity-hooks.py --user
 
 uninstall-local: ## Remove the linked extension and the local binary
 	-gemini extensions uninstall trustguard

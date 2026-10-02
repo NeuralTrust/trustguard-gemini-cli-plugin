@@ -55,4 +55,26 @@ actual=$(
 )
 [ "$actual" = "{}" ] || fail "bootstrap without a binary must fail open, got: $actual"
 
+# Antigravity passes the event name; the binary must see it as `hook <Event>`.
+mkdir -p "$PATH_DIR"
+cp "$FIXTURE" "$PATH_DIR/trustguard-gemini-cli"
+chmod 0755 "$PATH_DIR/trustguard-gemini-cli"
+actual=$(
+    printf '%s\n' "$PAYLOAD" |
+        env PATH="$PATH_DIR:$PATH" TRUSTGUARD_GEMINI_CLI_BIN_DIR="$BIN_DIR" \
+            node "$HOOK" PreToolUse
+)
+expected=$(printf 'binary=%s\nargs=hook PreToolUse\nstdin=%s' trustguard-gemini-cli "$PAYLOAD")
+[ "$actual" = "$expected" ] || fail "event argument was not forwarded, got: $actual"
+
+rm -f "$PATH_DIR/trustguard-gemini-cli"
+NODE_BIN=$(dirname "$(command -v node)")
+actual=$(
+    printf '%s\n' "$PAYLOAD" |
+        env PATH="$PATH_DIR:$NODE_BIN" TRUSTGUARD_GEMINI_CLI_BIN_DIR="$BIN_DIR" \
+            TRUSTGUARD_GEMINI_CLI_DOWNLOAD_BASE="http://127.0.0.1:9" \
+            node "$HOOK" PreToolUse 2>/dev/null
+)
+[ "$actual" = '{"decision":"allow"}' ] || fail "PreToolUse fail-open must allow, got: $actual"
+
 printf 'bootstrap hook tests passed\n'

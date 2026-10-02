@@ -29,7 +29,11 @@ func main() {
 	var err error
 	switch cmd {
 	case "hook":
-		err = runHook(os.Stdin, os.Stdout, loadConfig())
+		hint := ""
+		if len(os.Args) > 2 {
+			hint = os.Args[2]
+		}
+		err = runHook(os.Stdin, os.Stdout, loadConfig(), hint)
 	case "version":
 		fmt.Println(integrationVersion)
 	case "help", "-h", "--help":
