@@ -13,16 +13,16 @@
 // The VERSION and SHA256 table are updated per release.
 'use strict';
 
-const VERSION = '0.1.1';
+const VERSION = '0.1.2';
 
 // Per-platform SHA-256 of the release binaries (filled per release).
 const SHA256 = {
-  darwin_amd64: 'ea951e6fb4efd0e47c1730afc28877a7989e82ad21e6a7cf66b8beaa57eaac2f',
-  darwin_arm64: '9f287f943ad0afa8b1e1692229e26d2b95629af4571153f408106d946b5987bf',
-  linux_amd64: 'a441ca895eca358847e9966634f4156efbbad4dcc5b820f3b158542e09486705',
-  linux_arm64: 'c48ef9c92e6569cefadda023e9d987b4121949cf35b05d084ca42d9083129938',
-  windows_amd64: '086f0707c67e24d9512ad358054588a31ce89f2d0fe35ceb7e4ef3179f25ec00',
-  windows_arm64: 'a61c3b5089645ba7f320176b44c4b19cde6054d26631749b0f8869ddef0a3c7d',
+  darwin_amd64: '721b9fbbc777053bb4824011f4f4348661278fad409e426506cb9ce59286cf17',
+  darwin_arm64: '6c33795987be0f99133825bd0299c451049781e86cda573a165546fb9e3c2dec',
+  linux_amd64: '1003bf2c3fd39e12051a9d50b45138d50a5328894e7f32be61af6b93d067fe90',
+  linux_arm64: '3c71ceba15ef3f6ddba18e7f457330d8b10096fe3799cfd94c31e13e841f5611',
+  windows_amd64: '5bc6cb0b5a92bbca9a79eeb03e3bdede900e49df1c7e6407574dd6a2993b99ab',
+  windows_arm64: '598e6326ad1261cc31ac75a3be6f177cb00b4df53c4985bf33649c9fa3bedaed',
 };
 
 const fs = require('node:fs');
