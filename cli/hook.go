@@ -30,6 +30,25 @@ type hookInput struct {
 	// MCPContext is present only for tools served by an MCP server. Its
 	// tool_name is the name the server itself uses, without any prefix.
 	MCPContext *mcpContext `json:"mcp_context"`
+
+	// Antigravity (IDE, CLI, agy) sends camelCase and does not include the
+	// event name. The installer passes that name as `hook <Event>`.
+	ToolCall          *antigravityToolCall `json:"toolCall"`
+	ConversationID    string               `json:"conversationId"`
+	WorkspacePaths    []string             `json:"workspacePaths"`
+	ModelName         string               `json:"modelName"`
+	Error             string               `json:"error"`
+	InvocationNum     *int                 `json:"invocationNum"`
+	TerminationReason string               `json:"terminationReason"`
+	FullyIdle         *bool                `json:"fullyIdle"`
+
+	// Host is gemini-cli or antigravity, set while normalizing stdin.
+	Host string `json:"-"`
+}
+
+type antigravityToolCall struct {
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args"`
 }
 
 type mcpContext struct {
@@ -66,6 +85,11 @@ const (
 
 	// shellTool is Gemini CLI's built-in shell tool; its argument is `command`.
 	shellTool = "run_shell_command"
+	// antigravityShellTool is Antigravity's shell tool; its argument is CommandLine.
+	antigravityShellTool = "run_command"
+
+	hostGeminiCLI   = "gemini-cli"
+	hostAntigravity = "antigravity"
 )
 
 // verdict is the event-agnostic decision derived from an evaluate response.
@@ -75,7 +99,7 @@ type verdict struct {
 	fromTransform bool
 }
 
-func runHook(stdin io.Reader, stdout io.Writer, cfg Config) error {
+func runHook(stdin io.Reader, stdout io.Writer, cfg Config, eventHint string) error {
 	// Gemini CLI writes the event and closes stdin, but decode incrementally
 	// anyway so a host that keeps the pipe open cannot hang the hook.
 	var raw json.RawMessage
@@ -86,6 +110,7 @@ func runHook(stdin io.Reader, stdout io.Writer, cfg Config) error {
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return fmt.Errorf("decode hook input: %w", err)
 	}
+	normalizeHookInput(&in, eventHint)
 
 	out := decideEvent(cfg, in, hookAttributes(raw))
 	if err := json.NewEncoder(stdout).Encode(out); err != nil {
@@ -97,15 +122,15 @@ func runHook(stdin io.Reader, stdout io.Writer, cfg Config) error {
 func decideEvent(cfg Config, in hookInput, hookAttrs map[string]any) hookOutput {
 	if cfg.APIKey == "" {
 		logf("TRUSTGUARD_API_KEY missing; allowing %s without evaluation", in.HookEventName)
-		return hookOutput{}
+		return passthrough(in)
 	}
 	if !cfg.eventEnabled(in.HookEventName) {
-		return hookOutput{}
+		return passthrough(in)
 	}
 
 	req, ok := buildEvaluateRequest(cfg, in, hookAttrs)
 	if !ok {
-		return hookOutput{}
+		return passthrough(in)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout())
@@ -124,12 +149,15 @@ func buildEvaluateRequest(cfg Config, in hookInput, hookAttrs map[string]any) (E
 		SessionID:  in.SessionID,
 		ConsumerID: cfg.ConsumerID,
 		Attributes: map[string]any{
-			"collector":  map[string]any{"type": "ide"},
-			"source":     map[string]any{"application": "gemini-cli-plugin"},
-			"gemini_cli": hookAttrs,
+			"collector": map[string]any{"type": "ide"},
+			"source":    map[string]any{"application": sourceApplication(in)},
 		},
 	}
+	base.Attributes[attributeKey(in)] = hookAttrs
 	stampUserEmail(base.Attributes, accountEmail())
+	if in.ModelName != "" {
+		base.Attributes["model"] = map[string]any{"name": in.ModelName}
+	}
 
 	switch in.HookEventName {
 	case "BeforeAgent":
@@ -142,7 +170,7 @@ func buildEvaluateRequest(cfg Config, in hookInput, hookAttrs map[string]any) (E
 		}
 		return base, true
 
-	case "BeforeTool":
+	case "BeforeTool", "PreToolUse":
 		if in.ToolName == "" {
 			return base, false
 		}
@@ -165,8 +193,17 @@ func buildEvaluateRequest(cfg Config, in hookInput, hookAttrs map[string]any) (E
 		stampMCPServer(base.Attributes, in)
 		return base, true
 
-	case "AfterTool":
+	case "AfterTool", "PostToolUse":
 		text := toolResponseText(in.ToolResponse)
+		if strings.TrimSpace(text) == "" {
+			text = strings.TrimSpace(in.Error)
+		}
+		if strings.TrimSpace(text) == "" && in.HookEventName == "PostToolUse" {
+			text = strings.TrimSpace(string(in.ToolInput))
+		}
+		if strings.TrimSpace(text) == "" && in.HookEventName == "PostToolUse" {
+			text = strings.TrimSpace(in.ToolName)
+		}
 		if strings.TrimSpace(text) == "" {
 			return base, false
 		}
@@ -182,20 +219,113 @@ func buildEvaluateRequest(cfg Config, in hookInput, hookAttrs map[string]any) (E
 		stampToolName(base.Attributes, mcpCallName(in))
 		stampMCPServer(base.Attributes, in)
 		return base, true
+
+	case "PreInvocation", "PostInvocation":
+		if in.HookEventName == "PostInvocation" {
+			base.Direction = "output"
+		}
+		base.Protocol = "llm"
+		base.Payload = map[string]any{
+			"messages": []any{map[string]any{"role": "user", "content": invocationSummary(in)}},
+		}
+		return base, true
+
+	case "Stop":
+		base.Direction = "output"
+		base.Protocol = "llm"
+		base.Payload = map[string]any{
+			"messages": []any{map[string]any{"role": "assistant", "content": stopSummary(in)}},
+		}
+		return base, true
 	}
 	return base, false
 }
 
+func sourceApplication(in hookInput) string {
+	if in.Host == hostAntigravity {
+		return "antigravity-plugin"
+	}
+	return "gemini-cli-plugin"
+}
+
+func attributeKey(in hookInput) string {
+	if in.Host == hostAntigravity {
+		return "antigravity"
+	}
+	return "gemini_cli"
+}
+
+func invocationSummary(in hookInput) string {
+	n := 0
+	if in.InvocationNum != nil {
+		n = *in.InvocationNum
+	}
+	return fmt.Sprintf("antigravity %s model=%s invocation=%d", in.HookEventName, in.ModelName, n)
+}
+
+func stopSummary(in hookInput) string {
+	reason := strings.TrimSpace(in.TerminationReason)
+	if reason == "" {
+		reason = "unknown"
+	}
+	if msg := strings.TrimSpace(in.Error); msg != "" {
+		return "antigravity Stop reason=" + reason + " error=" + msg
+	}
+	return "antigravity Stop reason=" + reason
+}
+
+// normalizeHookInput fills Gemini-shaped fields from an Antigravity payload.
+// Antigravity does not send the event name; eventHint is the installer argument.
+func normalizeHookInput(in *hookInput, eventHint string) {
+	if strings.TrimSpace(in.HookEventName) == "" {
+		in.HookEventName = strings.TrimSpace(eventHint)
+	}
+	if in.ToolCall != nil || in.ConversationID != "" || in.InvocationNum != nil || in.TerminationReason != "" || in.FullyIdle != nil || isAntigravityEvent(in.HookEventName) {
+		in.Host = hostAntigravity
+	} else {
+		in.Host = hostGeminiCLI
+	}
+	if in.ToolCall != nil {
+		if in.ToolName == "" {
+			in.ToolName = in.ToolCall.Name
+		}
+		if len(in.ToolInput) == 0 {
+			in.ToolInput = in.ToolCall.Args
+		}
+	}
+	if in.SessionID == "" {
+		in.SessionID = in.ConversationID
+	}
+	if in.Cwd == "" && len(in.WorkspacePaths) > 0 {
+		in.Cwd = in.WorkspacePaths[0]
+	}
+}
+
+func isAntigravityEvent(name string) bool {
+	switch name {
+	case "PreToolUse", "PostToolUse", "PreInvocation", "PostInvocation", "Stop":
+		return true
+	default:
+		return false
+	}
+}
+
 // shellCommand returns the command line for run_shell_command calls.
 func shellCommand(in hookInput) string {
-	if in.ToolName != shellTool {
+	switch in.ToolName {
+	case shellTool, antigravityShellTool:
+	default:
 		return ""
 	}
 	var input struct {
-		Command string `json:"command"`
+		Command     string `json:"command"`
+		CommandLine string `json:"CommandLine"`
 	}
 	if err := json.Unmarshal(in.ToolInput, &input); err != nil {
 		return ""
+	}
+	if cmd := strings.TrimSpace(input.CommandLine); cmd != "" {
+		return cmd
 	}
 	return strings.TrimSpace(input.Command)
 }
@@ -367,9 +497,22 @@ func humanizeSignalType(raw string) string {
 
 func failModeOutput(cfg Config, in hookInput, err error) hookOutput {
 	logf("evaluate failed (%s): %v", in.HookEventName, err)
-	if cfg.FailMode == "closed" {
+	// Telemetry events (PostToolUse, PreInvocation, PostInvocation, Stop) must
+	// not stop the agent when TrustGuard is down. Only PreToolUse, and the
+	// Gemini CLI events, deny in fail-closed mode.
+	enforce := in.HookEventName == "PreToolUse" || !isAntigravityEvent(in.HookEventName)
+	if cfg.FailMode == "closed" && enforce {
 		msg := "TrustGuard is unreachable and fail_mode is closed; action denied."
 		return toHookOutput(in, verdict{permission: permissionDeny, userMessage: msg})
+	}
+	return passthrough(in)
+}
+
+// passthrough is the host's allow. Antigravity PreToolUse requires an explicit
+// decision; Gemini CLI treats an empty object as allow.
+func passthrough(in hookInput) hookOutput {
+	if in.HookEventName == "PreToolUse" {
+		return hookOutput{Decision: permissionAllow}
 	}
 	return hookOutput{}
 }
@@ -394,20 +537,33 @@ func toHookOutput(in hookInput, v verdict) hookOutput {
 		}
 		return out
 
-	case "BeforeTool":
+	case "BeforeTool", "PreToolUse":
 		switch v.permission {
 		case permissionDeny:
 			return hookOutput{Decision: permissionDeny, Reason: firstNonEmpty(v.userMessage, blockedMessage)}
 		case permissionAsk:
 			// Gemini CLI forces its confirmation prompt on decision "ask"
-			// and shows systemMessage beside it.
-			return hookOutput{Decision: permissionAsk, SystemMessage: firstNonEmpty(v.userMessage, askApprovalMessage)}
+			// and shows systemMessage beside it. Antigravity reads reason.
+			msg := firstNonEmpty(v.userMessage, askApprovalMessage)
+			out := hookOutput{Decision: permissionAsk, SystemMessage: msg}
+			if in.HookEventName == "PreToolUse" {
+				out.Reason = msg
+			}
+			return out
+		}
+		if in.HookEventName == "PreToolUse" {
+			return hookOutput{Decision: permissionAllow}
 		}
 		out := hookOutput{}
 		if v.userMessage != "" {
 			out.SystemMessage = v.userMessage
 		}
 		return out
+
+	case "PostToolUse", "PreInvocation", "PostInvocation", "Stop":
+		// Antigravity only gates PreToolUse. These events are telemetry:
+		// Activity records the verdict, the host always gets {}.
+		return hookOutput{}
 
 	case "AfterTool":
 		// A deny replaces what the model sees with the reason, so the reason
