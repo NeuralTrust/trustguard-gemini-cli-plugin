@@ -51,7 +51,7 @@ env TRUSTGUARD_ANTIGRAVITY_HOOKS="$TEST_ROOT/unused.json" python3 "$SCRIPT" --wo
 
 # Smoke test, as on a clean machine: the only binary is the versioned one the
 # bootstrap downloads into the bin dir.
-VERSION=$(sed -n "s/^const VERSION = '\([^']*\)';/\1/p" "$ROOT/trustguard/hooks/trustguard-hook.js")
+VERSION=$(sed -n "s/^const VERSION = '\([^']*\)';/\1/p" "$ROOT/hooks/trustguard-hook.js")
 BIN_DIR="$TEST_ROOT/bin"
 mkdir -p "$BIN_DIR"
 (cd "$ROOT" && go build -o "$BIN_DIR/trustguard-gemini-cli-$VERSION" ./cli)

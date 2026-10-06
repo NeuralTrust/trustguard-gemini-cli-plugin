@@ -5,7 +5,7 @@
 set -eu
 
 ROOT=$(cd -- "$(dirname "$0")/.." && pwd)
-HOOK="$ROOT/trustguard/hooks/trustguard-hook.js"
+HOOK="$ROOT/hooks/trustguard-hook.js"
 FIXTURE="$ROOT/tests/fixtures/fake-trustguard-gemini-cli.sh"
 TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/trustguard-bootstrap.XXXXXX")
 BIN_DIR="$TEST_ROOT/bin"
@@ -82,11 +82,16 @@ actual=$(
 case "$(command -v node)" in
     /usr/bin/* | /bin/*) ;; # node is on the minimal PATH below; nothing to hide
     *)
-        LAUNCHER="$ROOT/trustguard/hooks/trustguard-hook.sh"
+        LAUNCHER="$ROOT/hooks/trustguard-hook.sh"
         actual=$(printf '%s\n' "$PAYLOAD" | env PATH=/usr/bin:/bin /bin/sh "$LAUNCHER" PreToolUse 2>/dev/null)
         [ "$actual" = '{"decision":"allow"}' ] || fail "launcher without node must allow PreToolUse, got: $actual"
         actual=$(printf '%s\n' "$PAYLOAD" | env PATH=/usr/bin:/bin /bin/sh "$LAUNCHER" Stop 2>/dev/null)
         [ "$actual" = "{}" ] || fail "launcher without node must answer {} on Stop, got: $actual"
+        # Antigravity hooks.json files written before the extension moved to
+        # the repository root still call the old path.
+        LEGACY="$ROOT/trustguard/hooks/trustguard-hook.sh"
+        actual=$(printf '%s\n' "$PAYLOAD" | env PATH=/usr/bin:/bin /bin/sh "$LEGACY" PreToolUse 2>/dev/null)
+        [ "$actual" = '{"decision":"allow"}' ] || fail "legacy launcher path must forward PreToolUse, got: $actual"
         ;;
 esac
 

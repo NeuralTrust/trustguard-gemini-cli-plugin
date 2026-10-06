@@ -22,9 +22,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-EXTENSION_JSON = Path("trustguard/gemini-extension.json")
+EXTENSION_JSON = Path("gemini-extension.json")
 MAIN_GO = Path("cli/main.go")
-HOOK_JS = Path("trustguard/hooks/trustguard-hook.js")
+HOOK_JS = Path("hooks/trustguard-hook.js")
 
 # Platforms the bootstrap can install, mapped to the artifact suffix in dist/.
 PLATFORMS = {
