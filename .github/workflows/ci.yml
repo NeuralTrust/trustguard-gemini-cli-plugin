@@ -33,4 +33,4 @@ jobs:
         run: make test
 
       - name: Bootstrap script syntax
-        run: node --check trustguard/hooks/trustguard-hook.js
+        run: node --check hooks/trustguard-hook.js

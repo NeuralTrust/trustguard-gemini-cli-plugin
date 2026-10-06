@@ -17,7 +17,7 @@ test: ## Run the test suite
 
 lint: ## Vet the sources
 	go vet ./cli/
-	node --check trustguard/hooks/trustguard-hook.js
+	node --check hooks/trustguard-hook.js
 	python3 -c "import ast, pathlib; ast.parse(pathlib.Path('scripts/install-antigravity-hooks.py').read_text())"
 
 release-plan: ## Print what the Release workflow would do (mode + version)
@@ -29,8 +29,8 @@ install-local: build ## Link the extension + install the local binary for testin
 	@mkdir -p "$(HOME)/.trustguard/bin"
 	@cp bin/trustguard-gemini-cli "$(HOME)/.trustguard/bin/trustguard-gemini-cli"
 	@chmod 0755 "$(HOME)/.trustguard/bin/trustguard-gemini-cli"
-	gemini extensions link "$(CURDIR)/trustguard"
-	@echo "linked $(CURDIR)/trustguard — start a new Gemini CLI session and run /hooks panel"
+	gemini extensions link "$(CURDIR)"
+	@echo "linked $(CURDIR) — start a new Gemini CLI session and run /hooks panel"
 
 install-antigravity: build ## Install hooks and a local binary, then smoke-test PreToolUse
 	@mkdir -p "$(HOME)/.trustguard/bin"

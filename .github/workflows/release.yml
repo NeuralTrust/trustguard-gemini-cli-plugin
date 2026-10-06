@@ -98,9 +98,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH"
           git add -- \
-            trustguard/gemini-extension.json \
+            gemini-extension.json \
             cli/main.go \
-            trustguard/hooks/trustguard-hook.js
+            hooks/trustguard-hook.js
           if git diff --cached --quiet; then
             echo "main already carries the pins for v${VERSION} — nothing to propose"
             exit 0
@@ -171,7 +171,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH"
           git add -- \
-            trustguard/hooks/trustguard-hook.js
+            hooks/trustguard-hook.js
           git commit -m "chore(release): re-pin v${VERSION}"
           git push --force origin "$BRANCH"
 

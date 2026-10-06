@@ -124,7 +124,7 @@ def smoke_test(root: Path) -> None:
     answer {} and never call TrustGuard; a closed-mode call to an unreachable
     guard must come back deny.
     """
-    hook = root / "trustguard" / "hooks" / "trustguard-hook.js"
+    hook = root / "hooks" / "trustguard-hook.js"
     version = bootstrap_version(hook)
     if find_binary(version) is None:
         print(f"downloading trustguard-gemini-cli {version}")
@@ -186,10 +186,10 @@ def main() -> None:
     args = parser.parse_args()
 
     root = plugin_root()
-    sh = root / "trustguard" / "hooks" / "trustguard-hook.sh"
-    ps1 = root / "trustguard" / "hooks" / "trustguard-hook.ps1"
+    sh = root / "hooks" / "trustguard-hook.sh"
+    ps1 = root / "hooks" / "trustguard-hook.ps1"
     if not sh.is_file() or not ps1.is_file():
-        raise SystemExit(f"missing hook bootstraps under {root / 'trustguard' / 'hooks'}")
+        raise SystemExit(f"missing hook bootstraps under {root / 'hooks'}")
 
     # Check before writing: a hooks.json pointing at a hook that cannot
     # evaluate would install silently broken hooks.

@@ -35,7 +35,7 @@ build instead.
 ### Enterprise (MDM)
 
 1. Deploy `trustguard-gemini-cli` onto developer machines (PATH or
-   `~/.trustguard/bin`) together with `trustguard/hooks/trustguard-hook.js`.
+   `~/.trustguard/bin`) together with `hooks/trustguard-hook.js`.
 2. Drop a managed config with the org Gemini CLI collector key:
    - macOS: `/Library/Application Support/TrustGuard/gemini-cli.json`
    - Linux: `/etc/trustguard/gemini-cli.json`
@@ -154,7 +154,8 @@ environment variables winning unless MDM managed mode locks the field:
 
 | Path | Role |
 |---|---|
-| [`trustguard/`](./trustguard/) | Gemini CLI extension (manifest, hooks, Node bootstrap, skill, logo) |
+| [`gemini-extension.json`](./gemini-extension.json), [`hooks/`](./hooks/), [`skills/`](./skills/), [`assets/`](./assets/) | Gemini CLI extension (manifest, hooks, Node bootstrap, skill, logo). It lives at the repository root because `gemini extensions install <repo URL>` only reads a root manifest |
+| [`trustguard/hooks/`](./trustguard/hooks/) | Shims for Antigravity hooks written by installers before the move; re-run the installer to drop them |
 | [`cli/`](./cli/) | `trustguard-gemini-cli` binary (Go, stdlib-only) |
 | [`.github/workflows/`](./.github/workflows/) | CI + the release state machine that pins and publishes the platform binaries |
 | [`scripts/`](./scripts/) | Release plumbing (`release.py`, `build-dist.sh`) |
