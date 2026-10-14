@@ -557,6 +557,10 @@ func TestAntigravityPreToolUseForceAsk(t *testing.T) {
 	if out.Decision != "force_ask" || out.Reason == "" {
 		t.Fatalf("expected force_ask, got %+v", out)
 	}
+	// agy rejects the whole hook answer on fields its proto does not know.
+	if out.SystemMessage != "" {
+		t.Fatalf("Antigravity PreToolUse must not set systemMessage, got %q", out.SystemMessage)
+	}
 }
 
 func TestAntigravityPreToolUseOverwriteTransform(t *testing.T) {

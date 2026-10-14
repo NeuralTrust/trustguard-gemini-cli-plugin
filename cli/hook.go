@@ -583,9 +583,11 @@ func toHookOutput(cfg Config, in hookInput, v verdict) hookOutput {
 			// by Always Allow, so a policy ask uses force_ask.
 			// overwrite is a separate field, not a decision: the developer
 			// approves the transformed arguments, which are what runs.
+			// Antigravity's hook output has no systemMessage (agy rejects
+			// the whole answer on an unknown field), so reason carries it.
 			msg := firstNonEmpty(v.userMessage, askApprovalMessage)
 			if in.HookEventName == "PreToolUse" {
-				return hookOutput{Decision: permissionForceAsk, Reason: msg, SystemMessage: msg, Overwrite: overwriteArgs(in, v.transformed)}
+				return hookOutput{Decision: permissionForceAsk, Reason: msg, Overwrite: overwriteArgs(in, v.transformed)}
 			}
 			return hookOutput{Decision: permissionAsk, SystemMessage: msg}
 		}
