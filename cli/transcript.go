@@ -183,6 +183,13 @@ func overwriteArgs(in hookInput, payload map[string]any) map[string]any {
 	if len(payload) == 0 {
 		return nil
 	}
+	// Tool calls are sent as MCP tools/call, so a transform comes back with
+	// the rewritten arguments under params.arguments.
+	if params, ok := payload["params"].(map[string]any); ok {
+		if args, ok := params["arguments"].(map[string]any); ok {
+			payload = args
+		}
+	}
 	if _, ok := payload["CommandLine"]; ok {
 		return payload
 	}
