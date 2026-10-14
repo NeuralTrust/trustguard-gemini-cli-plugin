@@ -98,8 +98,6 @@ const (
 	askApprovalMessage = "A TrustGuard policy needs your approval to continue."
 	blockedMessage     = "TrustGuard blocked this action"
 
-	// shellTool is Gemini CLI's built-in shell tool; its argument is `command`.
-	shellTool = "run_shell_command"
 	// antigravityShellTool is Antigravity's shell tool; its argument is CommandLine.
 	antigravityShellTool = "run_command"
 
@@ -193,12 +191,10 @@ func buildEvaluateRequest(cfg Config, in hookInput, hookAttrs map[string]any) (E
 		if in.ToolName == "" {
 			return base, false
 		}
-		if cmd := shellCommand(in); cmd != "" {
-			base.Protocol = "all"
-			base.Payload = map[string]any{"input": cmd}
-			stampToolName(base.Attributes, in.ToolName)
-			return base, true
-		}
+		// Shell commands go as tools/call like every other tool: as plain
+		// input TrustGuard would score them as user prompts (jailbreak,
+		// toxicity, moderation) rather than as tool arguments. Same as the
+		// Claude Code plugin (ENG-1620).
 		base.Protocol = "mcp"
 		base.Payload = map[string]any{
 			"jsonrpc": "2.0",
@@ -363,26 +359,6 @@ func isAntigravityEvent(name string) bool {
 	default:
 		return false
 	}
-}
-
-// shellCommand returns the command line for run_shell_command calls.
-func shellCommand(in hookInput) string {
-	switch in.ToolName {
-	case shellTool, antigravityShellTool:
-	default:
-		return ""
-	}
-	var input struct {
-		Command     string `json:"command"`
-		CommandLine string `json:"CommandLine"`
-	}
-	if err := json.Unmarshal(in.ToolInput, &input); err != nil {
-		return ""
-	}
-	if cmd := strings.TrimSpace(input.CommandLine); cmd != "" {
-		return cmd
-	}
-	return strings.TrimSpace(input.Command)
 }
 
 func decodeToolArguments(raw json.RawMessage) any {
@@ -607,9 +583,11 @@ func toHookOutput(cfg Config, in hookInput, v verdict) hookOutput {
 			// by Always Allow, so a policy ask uses force_ask.
 			// overwrite is a separate field, not a decision: the developer
 			// approves the transformed arguments, which are what runs.
+			// Antigravity's hook output has no systemMessage (agy rejects
+			// the whole answer on an unknown field), so reason carries it.
 			msg := firstNonEmpty(v.userMessage, askApprovalMessage)
 			if in.HookEventName == "PreToolUse" {
-				return hookOutput{Decision: permissionForceAsk, Reason: msg, SystemMessage: msg, Overwrite: overwriteArgs(in, v.transformed)}
+				return hookOutput{Decision: permissionForceAsk, Reason: msg, Overwrite: overwriteArgs(in, v.transformed)}
 			}
 			return hookOutput{Decision: permissionAsk, SystemMessage: msg}
 		}

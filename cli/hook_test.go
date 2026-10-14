@@ -164,15 +164,19 @@ func TestShellBeforeToolBlock(t *testing.T) {
 	if out.Decision != "deny" || out.Reason != blockedMessage+": dangerous command (code_sanitation)" {
 		t.Fatalf("expected deny with the detector, got %+v", out)
 	}
-	if (*captured)["protocol"] != "all" {
-		t.Fatalf("expected protocol=all for run_shell_command, got %v", (*captured)["protocol"])
+	// Shell commands are tool arguments, not user prompts: tools/call like
+	// any other tool.
+	if (*captured)["protocol"] != "mcp" {
+		t.Fatalf("expected protocol=mcp for run_shell_command, got %v", (*captured)["protocol"])
 	}
 	payload := (*captured)["payload"].(map[string]any)
-	if payload["input"] != "rm -rf /" {
-		t.Fatalf("unexpected payload: %v", payload)
+	if payload["method"] != "tools/call" {
+		t.Fatalf("expected tools/call, got %v", payload)
 	}
-	if attr(t, captured, "tool")["name"] != "run_shell_command" {
-		t.Fatalf("expected attributes.tool.name=run_shell_command")
+	params := payload["params"].(map[string]any)
+	args := params["arguments"].(map[string]any)
+	if params["name"] != "run_shell_command" || args["command"] != "rm -rf /" {
+		t.Fatalf("unexpected params: %v", params)
 	}
 }
 
@@ -501,15 +505,15 @@ func TestAntigravityPreToolUseDeniesShell(t *testing.T) {
 	if out.Decision != "deny" || out.Reason == "" {
 		t.Fatalf("expected deny with a reason, got %+v", out)
 	}
-	if (*captured)["protocol"] != "all" || (*captured)["direction"] != "input" {
-		t.Fatalf("expected protocol all input, got %v", *captured)
+	if (*captured)["protocol"] != "mcp" || (*captured)["direction"] != "input" {
+		t.Fatalf("expected protocol mcp input, got %v", *captured)
 	}
 	if (*captured)["session_id"] != "conv_1" {
 		t.Fatalf("expected session from conversationId, got %v", (*captured)["session_id"])
 	}
-	payload := (*captured)["payload"].(map[string]any)
-	if payload["input"] != "rm -rf /" {
-		t.Fatalf("expected CommandLine as input, got %v", payload)
+	params := (*captured)["payload"].(map[string]any)["params"].(map[string]any)
+	if params["name"] != "run_command" || params["arguments"].(map[string]any)["CommandLine"] != "rm -rf /" {
+		t.Fatalf("expected run_command tools/call with CommandLine, got %v", params)
 	}
 	if attr(t, captured, "source")["application"] != "antigravity-plugin" {
 		t.Fatalf("expected antigravity-plugin, got %v", (*captured)["attributes"])
@@ -553,6 +557,10 @@ func TestAntigravityPreToolUseForceAsk(t *testing.T) {
 	if out.Decision != "force_ask" || out.Reason == "" {
 		t.Fatalf("expected force_ask, got %+v", out)
 	}
+	// agy rejects the whole hook answer on fields its proto does not know.
+	if out.SystemMessage != "" {
+		t.Fatalf("Antigravity PreToolUse must not set systemMessage, got %q", out.SystemMessage)
+	}
 }
 
 func TestAntigravityPreToolUseOverwriteTransform(t *testing.T) {
@@ -569,6 +577,31 @@ func TestAntigravityPreToolUseOverwriteTransform(t *testing.T) {
 	})
 	// overwrite is a field, not a decision: the ask still prompts, on the
 	// redacted command.
+	if out.Decision != "force_ask" || out.Overwrite["CommandLine"] != "echo redacted" {
+		t.Fatalf("expected force_ask with CommandLine overwritten, got %+v", out)
+	}
+}
+
+func TestAntigravityPreToolUseOverwriteMCPTransform(t *testing.T) {
+	srv, _ := stubGuard(t, EvaluateResponse{
+		Status: "transform",
+		TransformedPayload: map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name":      "run_command",
+				"arguments": map[string]any{"CommandLine": "echo redacted"},
+			},
+		},
+	})
+	out := invokeHookEvent(t, testConfig(srv.URL), "PreToolUse", map[string]any{
+		"conversationId": "conv_1",
+		"toolCall": map[string]any{
+			"name": "run_command",
+			"args": map[string]any{"CommandLine": "echo secret"},
+		},
+	})
 	if out.Decision != "force_ask" || out.Overwrite["CommandLine"] != "echo redacted" {
 		t.Fatalf("expected force_ask with CommandLine overwritten, got %+v", out)
 	}

@@ -56,8 +56,12 @@ from the user file or the environment either.
 | Gemini CLI event | TrustGuard protocol | Direction | Notes |
 |---|---|---|---|
 | `BeforeAgent` | `llm` | input | Block with `decision: "deny"`; report-only findings are appended to the prompt as context |
-| `BeforeTool` (`run_shell_command`) | `all` | input | Deny with `decision: "deny"`. Gate `ask` and DLP `transform` (default `transform_action: "ask"`) become Gemini CLI's own confirmation prompt with the reason |
+| `BeforeTool` (`run_shell_command`) | `mcp` tools/call | input | `params.name` is `run_shell_command`, `params.arguments.command` the command. Deny with `decision: "deny"`. Gate `ask` and DLP `transform` (default `transform_action: "ask"`) become Gemini CLI's own confirmation prompt with the reason |
 | `BeforeTool` (MCP and other built-in tools) | `mcp` tools/call | input | `params.name` is the server's tool name from `mcp_context`; `attributes.mcp.server` names the server |
+
+Shell commands go as `tools/call` like every other tool, as in the Claude Code
+plugin: sent as plain `all` input, TrustGuard would score them as user prompts
+(jailbreak, toxicity, moderation) instead of tool arguments.
 | `AfterTool` | `mcp` result | output | Detector `block` replaces the tool result with the reason; gate `ask` is ignored |
 
 ## Antigravity
@@ -90,7 +94,7 @@ message. A DLP `transform` that returns replacement text sets `overwrite` on
 
 | Antigravity event | TrustGuard protocol | Direction | Host output |
 |---|---|---|---|
-| `PreToolUse` (`run_command`) | `all` | input | `deny`, `force_ask` or `allow`, plus `overwrite` on a transform |
+| `PreToolUse` (`run_command`) | `mcp` tools/call | input | `deny`, `force_ask` or `allow`, plus `overwrite` on a transform |
 | `PreToolUse` (other tools) | `mcp` tools/call | input | same |
 | `PostToolUse` | `mcp` result (tool arguments or error) | output | `{}` |
 | `PreInvocation` | `llm` user prompt, or `mcp` result with the tool output on later calls | input / output | `injectSteps` when the prompt or the tool output is blocked and enforcement is on |
