@@ -697,12 +697,28 @@ func stampMCPServer(attrs map[string]any, in hookInput) {
 	attrs["mcp"] = map[string]any{"server": in.MCPContext.ServerName}
 }
 
-// hookAttributes is the stdin JSON as a map so every field Gemini CLI sent
-// (including ones this binary does not decode) travels in attributes.gemini_cli.
+// hookContentFields are the stdin fields that hold what an event is evaluated
+// on: the prompt, the tool's arguments, the tool's output. The payload already
+// carries them, the output clipped to MaxContentBytes. A second copy under
+// attributes.gemini_cli (or attributes.antigravity) would be stored as sent,
+// unclipped, and no detector reads attributes, so DLP would never mask it.
+var hookContentFields = []string{"prompt", "tool_input", "tool_response"}
+
+// hookAttributes is the stdin JSON as a map so every field Gemini CLI or
+// Antigravity sent (including ones this binary does not decode) travels in
+// attributes.gemini_cli or attributes.antigravity, except the content fields,
+// which travel in the payload: Gemini CLI's, and Antigravity's toolCall.args
+// (its toolCall.name stays).
 func hookAttributes(raw json.RawMessage) map[string]any {
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil || m == nil {
 		return map[string]any{}
+	}
+	for _, field := range hookContentFields {
+		delete(m, field)
+	}
+	if call, ok := m["toolCall"].(map[string]any); ok {
+		delete(call, "args")
 	}
 	return m
 }

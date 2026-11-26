@@ -518,8 +518,47 @@ func TestAntigravityPreToolUseDeniesShell(t *testing.T) {
 	if attr(t, captured, "source")["application"] != "antigravity-plugin" {
 		t.Fatalf("expected antigravity-plugin, got %v", (*captured)["attributes"])
 	}
-	if _, ok := (*captured)["attributes"].(map[string]any)["antigravity"]; !ok {
-		t.Fatalf("expected attributes.antigravity, got %v", (*captured)["attributes"])
+	ag := attr(t, captured, "antigravity")
+	call, _ := ag["toolCall"].(map[string]any)
+	if call["name"] != "run_command" || ag["conversationId"] != "conv_1" {
+		t.Fatalf("expected the hook JSON in attributes.antigravity, got %v", ag)
+	}
+	if _, ok := call["args"]; ok {
+		t.Fatalf("the tool's arguments must travel in the payload only, got %v", call)
+	}
+}
+
+// The content an event is evaluated on travels once, in the payload: a copy
+// under attributes is stored unclipped and never masked by DLP.
+func TestEvaluateKeepsContentOutOfHookAttributes(t *testing.T) {
+	cases := map[string]map[string]any{
+		"BeforeAgent": {"prompt": "call 555-0100"},
+		"BeforeTool":  {"tool_name": "run_shell_command", "tool_input": map[string]any{"command": "echo 555-0100"}},
+		"AfterTool": {
+			"tool_name": "run_shell_command", "tool_input": map[string]any{"command": "echo 555-0100"},
+			"tool_response": map[string]any{"llmContent": "555-0100"},
+		},
+	}
+	for event, input := range cases {
+		t.Run(event, func(t *testing.T) {
+			input["hook_event_name"] = event
+			input["session_id"] = "sess_1"
+			input["cwd"] = "/tmp/demo"
+			srv, captured := stubGuard(t, EvaluateResponse{Status: "allow"})
+			_ = invokeHook(t, testConfig(srv.URL), input)
+			if (*captured)["payload"] == nil {
+				t.Fatalf("expected an evaluated payload, got %v", *captured)
+			}
+			raw := attr(t, captured, "gemini_cli")
+			for _, field := range hookContentFields {
+				if _, ok := raw[field]; ok {
+					t.Fatalf("attributes.gemini_cli must not carry %s, got %v", field, raw)
+				}
+			}
+			if raw["hook_event_name"] != event || raw["cwd"] != "/tmp/demo" {
+				t.Fatalf("attributes.gemini_cli must keep the event's metadata, got %v", raw)
+			}
+		})
 	}
 }
 
