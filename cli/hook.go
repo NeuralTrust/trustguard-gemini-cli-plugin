@@ -378,13 +378,9 @@ func decodeToolArguments(raw json.RawMessage) any {
 	return map[string]any{"input": string(raw)}
 }
 
-// toolResponseBlocks flattens Gemini CLI's tool_response
-// ({llmContent, returnDisplay, error}) into one text per result part.
-// llmContent is a string or a list of Gemini parts; each text part stays its
-// own block because TrustGuard bills per block and a pre-joined text would not
-// dedup against TrustGate. A structured response with nothing textual in it
-// yields nil so nothing is evaluated; an unknown shape is forwarded as compact
-// JSON so it stays inspectable.
+// toolResponseBlocks flattens Gemini CLI's tool_response ({llmContent, returnDisplay,
+// error}) into one text block per part, as TrustGate sees an MCP result's blocks.
+// Nothing textual yields nil; an unknown shape is forwarded as compact JSON.
 func toolResponseBlocks(raw json.RawMessage) []string {
 	if len(raw) == 0 {
 		return nil
