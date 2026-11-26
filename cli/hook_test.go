@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func testConfig(url string) Config {
@@ -346,7 +347,7 @@ func TestAfterToolBlockReplacesResult(t *testing.T) {
 	}
 }
 
-func TestAfterToolJoinsParts(t *testing.T) {
+func TestAfterToolSendsEachPartAsOwnBlock(t *testing.T) {
 	srv, captured := stubGuard(t, EvaluateResponse{Status: "allow"})
 	_ = invokeHook(t, testConfig(srv.URL), map[string]any{
 		"hook_event_name": "AfterTool",
@@ -356,13 +357,105 @@ func TestAfterToolJoinsParts(t *testing.T) {
 			"llmContent": []any{map[string]any{"text": "first"}, map[string]any{"text": "second"}},
 		},
 	})
-	result := (*captured)["payload"].(map[string]any)["result"].(map[string]any)
-	text := result["content"].([]any)[0].(map[string]any)["text"]
-	if text != "first\nsecond" {
-		t.Fatalf("expected parts joined, got %v", text)
+	if got := resultTexts(t, captured); strings.Join(got, "|") != "first|second" {
+		t.Fatalf("expected one block per part, got %q", got)
 	}
 	if attr(t, captured, "tool")["name"] != "search" {
 		t.Fatalf("expected attributes.tool.name=search for the result")
+	}
+}
+
+func resultTexts(t *testing.T, captured *map[string]any) []string {
+	t.Helper()
+	result := (*captured)["payload"].(map[string]any)["result"].(map[string]any)
+	var texts []string
+	for _, c := range result["content"].([]any) {
+		block := c.(map[string]any)
+		if block["type"] != "text" {
+			t.Fatalf("expected text blocks, got %v", block)
+		}
+		texts = append(texts, block["text"].(string))
+	}
+	return texts
+}
+
+func TestToolResponseBlocks(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{"empty", ``, nil},
+		{"bare string", `"hello"`, []string{"hello"}},
+		{"single string llmContent", `{"llmContent":"one"}`, []string{"one"}},
+		{"multi part", `{"llmContent":[{"text":"a"},{"text":"b"}]}`, []string{"a", "b"}},
+		{"non text parts skipped", `{"llmContent":[{"inlineData":{"mimeType":"image/png"}},{"text":"a"},{"text":"  "}]}`, []string{"a"}},
+		{"only non text parts", `{"llmContent":[{"inlineData":{"mimeType":"image/png"}}]}`, nil},
+		{"single part object", `{"llmContent":{"text":"solo"}}`, []string{"solo"}},
+		{"falls back to returnDisplay", `{"llmContent":"","returnDisplay":"shown"}`, []string{"shown"}},
+		{"error message only", `{"error":{"message":" boom "}}`, []string{"boom"}},
+		{"empty llmContent", `{"llmContent":""}`, nil},
+		{"unknown shape as json", `{"foo":1}`, []string{`{"foo":1}`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toolResponseBlocks(json.RawMessage(tt.raw))
+			if strings.Join(got, "\x00") != strings.Join(tt.want, "\x00") || len(got) != len(tt.want) {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClipBlocks(t *testing.T) {
+	tests := []struct {
+		name   string
+		blocks []string
+		budget int
+		want   []string
+	}{
+		{"fits", []string{"ab", "cd"}, 10, []string{"ab", "cd"}},
+		{"budget spans blocks", []string{"abc", "def", "ghi"}, 5, []string{"abc", "de"}},
+		{"later blocks dropped", []string{"abc", "def"}, 3, []string{"abc"}},
+		{"rune safe cut", []string{"aéé"}, 2, []string{"a"}},
+		{"cut leaves only blanks", []string{"abc", "  d"}, 5, []string{"abc"}},
+		{"no blocks", nil, 5, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := clipBlocks(tt.blocks, tt.budget)
+			if len(got) != len(tt.want) || strings.Join(got, "|") != strings.Join(tt.want, "|") {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClipIsRuneSafe(t *testing.T) {
+	for n := 0; n <= 8; n++ {
+		got := clip("héllo wörld", n)
+		if !utf8.ValidString(got) || len(got) > n {
+			t.Fatalf("clip(%d) = %q: invalid or over budget", n, got)
+		}
+	}
+	if got := clip("short", 10); got != "short" {
+		t.Fatalf("expected untouched, got %q", got)
+	}
+}
+
+func TestAfterToolPayloadBudgetAcrossBlocks(t *testing.T) {
+	srv, captured := stubGuard(t, EvaluateResponse{Status: "allow"})
+	cfg := testConfig(srv.URL)
+	cfg.MaxContentBytes = 6
+	_ = invokeHook(t, cfg, map[string]any{
+		"hook_event_name": "AfterTool",
+		"tool_name":       "search",
+		"tool_response": map[string]any{
+			"llmContent": []any{map[string]any{"text": "abcd"}, map[string]any{"text": "éééé"}, map[string]any{"text": "zzz"}},
+		},
+	})
+	if got := resultTexts(t, captured); strings.Join(got, "|") != "abcd|é" {
+		t.Fatalf("expected shared budget with rune-safe cut, got %q", got)
 	}
 }
 

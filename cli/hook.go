@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 )
 
 // hookInput is the stdin payload Gemini CLI sends to every hook. Fields are a
@@ -209,17 +210,20 @@ func buildEvaluateRequest(cfg Config, in hookInput, hookAttrs map[string]any) (E
 		return base, true
 
 	case "AfterTool", "PostToolUse":
-		text := toolResponseText(in.ToolResponse)
-		if strings.TrimSpace(text) == "" {
-			text = strings.TrimSpace(in.Error)
+		blocks := toolResponseBlocks(in.ToolResponse)
+		if len(blocks) == 0 {
+			if msg := strings.TrimSpace(in.Error); msg != "" {
+				blocks = []string{msg}
+			}
 		}
-		if strings.TrimSpace(text) == "" && in.HookEventName == "PostToolUse" {
-			text = strings.TrimSpace(string(in.ToolInput))
+		if len(blocks) == 0 && in.HookEventName == "PostToolUse" {
+			blocks = nonBlank([]string{strings.TrimSpace(string(in.ToolInput))})
 		}
-		if strings.TrimSpace(text) == "" && in.HookEventName == "PostToolUse" {
-			text = strings.TrimSpace(in.ToolName)
+		if len(blocks) == 0 && in.HookEventName == "PostToolUse" {
+			blocks = nonBlank([]string{strings.TrimSpace(in.ToolName)})
 		}
-		if strings.TrimSpace(text) == "" {
+		content := textBlocks(clipBlocks(blocks, cfg.MaxContentBytes))
+		if len(content) == 0 {
 			return base, false
 		}
 		base.Direction = "output"
@@ -227,9 +231,7 @@ func buildEvaluateRequest(cfg Config, in hookInput, hookAttrs map[string]any) (E
 		base.Payload = map[string]any{
 			"jsonrpc": "2.0",
 			"id":      1,
-			"result": map[string]any{
-				"content": []any{map[string]any{"type": "text", "text": clip(text, cfg.MaxContentBytes)}},
-			},
+			"result":  map[string]any{"content": content},
 		}
 		stampToolName(base.Attributes, mcpCallName(in))
 		stampMCPServer(base.Attributes, in)
@@ -376,19 +378,15 @@ func decodeToolArguments(raw json.RawMessage) any {
 	return map[string]any{"input": string(raw)}
 }
 
-// toolResponseText flattens Gemini CLI's tool_response
-// ({llmContent, returnDisplay, error}) into the text the model will see.
-// llmContent is a string or a list of Gemini parts; text parts are joined. A
-// structured response with nothing textual in it (an image part, an empty
-// result) yields "" so nothing is evaluated; an unknown shape is forwarded as
-// compact JSON so it stays inspectable.
-func toolResponseText(raw json.RawMessage) string {
+// toolResponseBlocks gives one text block per part of tool_response, as TrustGate sends an MCP result.
+// Nothing textual yields nil; an unknown shape stays compact JSON.
+func toolResponseBlocks(raw json.RawMessage) []string {
 	if len(raw) == 0 {
-		return ""
+		return nil
 	}
 	var asString string
 	if err := json.Unmarshal(raw, &asString); err == nil {
-		return asString
+		return nonBlank([]string{asString})
 	}
 	var res struct {
 		LLMContent    json.RawMessage `json:"llmContent"`
@@ -398,53 +396,86 @@ func toolResponseText(raw json.RawMessage) string {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
-		return strings.TrimSpace(string(raw))
+		return nonBlank([]string{strings.TrimSpace(string(raw))})
 	}
 	if res.LLMContent == nil && res.ReturnDisplay == nil && res.Error == nil {
-		return strings.TrimSpace(string(raw))
+		return nonBlank([]string{strings.TrimSpace(string(raw))})
 	}
-	if text := partsText(res.LLMContent); text != "" {
-		return text
+	if texts := partsTexts(res.LLMContent); len(texts) > 0 {
+		return texts
 	}
-	if text := partsText(res.ReturnDisplay); text != "" {
-		return text
+	if texts := partsTexts(res.ReturnDisplay); len(texts) > 0 {
+		return texts
 	}
 	if res.Error != nil {
-		return strings.TrimSpace(res.Error.Message)
+		return nonBlank([]string{strings.TrimSpace(res.Error.Message)})
 	}
-	return ""
+	return nil
 }
 
-func partsText(raw json.RawMessage) string {
+// partsTexts returns the non-blank text of a string, a list of parts or a
+// single part, one entry per part.
+func partsTexts(raw json.RawMessage) []string {
 	if len(raw) == 0 {
-		return ""
+		return nil
 	}
 	var asString string
 	if err := json.Unmarshal(raw, &asString); err == nil {
-		return asString
+		return nonBlank([]string{asString})
 	}
 	var parts []struct {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(raw, &parts); err == nil {
-		var texts []string
+		texts := make([]string, 0, len(parts))
 		for _, p := range parts {
-			if p.Text != "" {
-				texts = append(texts, p.Text)
-			}
+			texts = append(texts, p.Text)
 		}
-		if len(texts) > 0 {
-			return strings.Join(texts, "\n")
-		}
-		return ""
+		return nonBlank(texts)
 	}
 	var part struct {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(raw, &part); err == nil {
-		return part.Text
+		return nonBlank([]string{part.Text})
 	}
-	return ""
+	return nil
+}
+
+func nonBlank(texts []string) []string {
+	var out []string
+	for _, t := range texts {
+		if strings.TrimSpace(t) != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// clipBlocks spends one byte budget across the blocks, in order, and drops
+// the blocks the budget never reaches.
+func clipBlocks(blocks []string, budget int) []string {
+	var out []string
+	for _, b := range blocks {
+		if budget <= 0 {
+			break
+		}
+		c := clip(b, budget)
+		if strings.TrimSpace(c) == "" {
+			continue
+		}
+		out = append(out, c)
+		budget -= len(c)
+	}
+	return out
+}
+
+func textBlocks(texts []string) []any {
+	content := make([]any, 0, len(texts))
+	for _, t := range texts {
+		content = append(content, map[string]any{"type": "text", "text": t})
+	}
+	return content
 }
 
 func applyVerdict(cfg Config, res *EvaluateResponse) verdict {
@@ -743,6 +774,13 @@ func mcpCallName(in hookInput) string {
 func clip(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	if n <= 0 {
+		return ""
+	}
+	// Back up to a rune boundary so the cut never leaves a partial character.
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }
